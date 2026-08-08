@@ -59,10 +59,14 @@ const SNAKE_PHASE_STEP = 800; // 蛇行メンバー間の初期位相ずらし
 const WAVE_X_MIN = 24; // 編隊アンカーxの最小値(px)
 const WAVE_X_SPREAD = 97; // rndRangeに渡す範囲（0..96）
 
-const FIRE_INTERVAL_BASE = 90; // 発射間隔の基本値(フレーム)
+// 発射間隔の基本値(フレーム)。予備動作(TELEGRAPH_SLOWDOWN_FRAMES=64)より十分長く取る。
+// 90だと1周期90..130フレームのうち64が減速フェーズになり、実測で「減速中の方が長い」状態
+// (通常19067サンプルに対し予備動作26350サンプル)になっていた。減速が常態だと
+// 「あ、撃つな」という速度差が読めなくなるので、通常速度が多数派になる長さにする。
+const FIRE_INTERVAL_BASE = 150;
 const FIRE_INTERVAL_JITTER = 40; // 発射間隔のばらつき幅
-const TELEGRAPH_SLOWDOWN_FRAMES = 40; // 発射40フレーム前から先に減速し、その後20フレーム前から点滅する
-const TELEGRAPH_SLOWDOWN_NUM = 0x0080; // 予備動作中の縦速度係数(1/2)。横蛇行は継続して予兆中も位置取りを見せる
+const TELEGRAPH_SLOWDOWN_FRAMES = 64; // 発射64フレーム前から先に減速し、その後20フレーム前から点滅する
+const TELEGRAPH_SLOWDOWN_NUM = 0x0040; // 予備動作中の縦速度係数(1/4)。横蛇行も同係数で減衰させ、はっきり分かる速度差を出す
 const TELEGRAPH_FRAMES = 20; // 発射の何フレーム前からフラッシュ構えモーションに入るか
 const TELEGRAPH_BLINK_SHIFT = 2; // atkTimer>>この値 & 1 で4フレーム周期の点滅を作る
 const SHAKE_PERIOD_SHIFT = 3; // オフロード揺れの周期(game.jsのSHAKE_PERIOD_SHIFTと同じ値)。8フレームごとに反転
@@ -247,14 +251,18 @@ function updateOneEnemy(e) {
   }
 
   if (e.kind === KIND_SNAKE) {
+    let step = SNAKE_STEP;
+    if (e.atkTimer <= TELEGRAPH_SLOWDOWN_FRAMES) {
+      step = fmul(step, TELEGRAPH_SLOWDOWN_NUM);
+    }
     const dir = e.flags & 1;
     if (dir === 0) {
-      e.timer += SNAKE_STEP;
+      e.timer += step;
       if (e.timer >= SNAKE_AMPLITUDE) {
         e.flags |= 1;
       }
     } else {
-      e.timer -= SNAKE_STEP;
+      e.timer -= step;
       if (e.timer <= -SNAKE_AMPLITUDE) {
         e.flags &= ~1;
       }
@@ -287,12 +295,21 @@ function updateOneEnemy(e) {
   if (curSpawnFrozen) {
     return;
   }
-  e.atkTimer -= 1;
+  // 予備動作へ入る手前で、自機が近いあいだはカウントダウンごと止める。
+  // 減速帯へ入れてしまうと「撃てないのに這って遅い」敵になる(実測でこの状態が敵サンプルの
+  // 46%を占めていた)。帯の外で止めておけば通常速度のまま近接でき、自機が離れてから
+  // 改めて予備動作を踏む。
+  if (e.atkTimer > TELEGRAPH_SLOWDOWN_FRAMES || !isPlayerTooCloseToFire(e)) {
+    e.atkTimer -= 1;
+  }
   if (e.atkTimer <= 0) {
     if (isPlayerTooCloseToFire(e)) {
-      // 至近距離の回避不能弾を作らないため、攻撃をキャンセルせずready状態で保持する。
-      // 自機が32x32中心距離の外へ出たフレームで発射し、範囲内では絶対にspawnしない。
-      e.atkTimer = 1;
+      // 至近距離の回避不能弾を作らないため、攻撃をキャンセルせず待機させる。範囲内では絶対にspawnしない。
+      // 待機位置を予備動作帯の「1つ外側」に置くのが要点。ここを1にすると待機中ずっと減速帯に
+      // 居座り、自機が近いあいだ敵が這うように遅くなる(実測: 敵サンプルの46%がこの状態だった)。
+      // 帯の外で待たせれば通常速度のまま近接でき、自機が離れたあとは改めて64フレームの
+      // 予備動作を踏んでから撃つ(予備動作なしで撃つ敵は存在しない、という保証も保たれる)。
+      e.atkTimer = TELEGRAPH_SLOWDOWN_FRAMES + 1;
       return;
     }
     fireEnemyBullet(e);

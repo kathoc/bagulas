@@ -1,6 +1,19 @@
 // game.js — 自機・入力・当たり判定・スコア/残機/ゲームオーバーを含むゲームループ本体
 // 8.8固定小数点のみ使用。毎フレームのオブジェクト/配列生成は禁止（update系関数内で new/{}/[]/push/map/filter は使わない）。
 import { f, toPx, fmul } from './fixed.js';
+import {
+  hitOverlap,
+  centerCoord,
+  SPRITE_HALF_16,
+  SPRITE_HALF_32,
+  SPRITE_HALF_8,
+  PLAYER_HITBOX,
+  BOSS_HITBOX,
+  PLAYER_BULLET_HITBOX,
+  ENEMY_BULLET_HITBOX,
+  enemyHitboxForTile,
+  obstacleHitboxForTile,
+} from './hitbox.js';
 import { isDown, isPressed, K, isTouch } from './input.js';
 import { pushMeta16, pushSprite, drawText, drawSolidRect, spriteBudgetLeft, isOffRoadAt } from './gfx.js';
 import { TILE16_PLAYER, TILE_SMOKE } from './tiles.js';
@@ -33,7 +46,6 @@ import {
   getBossHp,
   getBossX,
   getBossY,
-  BOSS_SIZE,
 } from './boss.js';
 
 // 自機の可動範囲（画面px, 8.8化前の生値）。
@@ -71,14 +83,6 @@ const SCROLL_ACCEL_STEP = 8; // リスポーン後、毎フレーム線形に加
 // 0x0155(341/256)は逆に4/3倍になるので絶対に使わない。
 const SCROLL_OFFROAD_FACTOR = 0x00ab;
 const DEATH = { NONE: 0, DYING: 1, RESPAWNING: 2 };
-
-// 当たり判定用のAABBサイズ（すべて8.8固定小数点。sqrt/割り算は使わない単純矩形判定）
-const PLAYER_HITBOX_W = f(8); // 自機の当たり判定は中央8x8のみ（スプライト自体は16x16のまま、外周4pxには判定を持たない）
-const PLAYER_HITBOX_OFFSET = f(4); // 16x16スプライト内で中央8x8へ寄せるオフセット = (16-8)/2
-const ENEMY_W = f(16);
-const OBSTACLE_W = f(16);
-const PLAYER_BULLET_W = f(8);
-const ENEMY_BULLET_W = f(6);
 
 const CLEAR_DISPLAY_FRAMES = 90; // CLEARテキストを表示してから次ステージへ進むまでのフレーム数
 
@@ -185,10 +189,6 @@ function clamp(v, lo, hi) {
     return hi;
   }
   return v;
-}
-
-function aabbOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
-  return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
 }
 
 // forEach へ渡す関数参照はモジュール直下で1回だけ定義する（毎フレーム新規クロージャを作らないため）
@@ -348,15 +348,16 @@ function checkOneEnemyAgainstCurBullet(e, idx) {
   if (pierce && curBullet.lastHitEnemy === idx && curBullet.hitCooldown > 0) {
     return;
   }
-  const hit = aabbOverlap(
-    curBullet.x,
-    curBullet.y,
-    PLAYER_BULLET_W,
-    PLAYER_BULLET_W,
-    e.x,
-    e.y,
-    ENEMY_W,
-    ENEMY_W
+  const eb = enemyHitboxForTile(e.tile);
+  const hit = hitOverlap(
+    centerCoord(curBullet.x, SPRITE_HALF_8),
+    centerCoord(curBullet.y, SPRITE_HALF_8),
+    PLAYER_BULLET_HITBOX.hw,
+    PLAYER_BULLET_HITBOX.hh,
+    centerCoord(e.x, SPRITE_HALF_16),
+    centerCoord(e.y, SPRITE_HALF_16),
+    eb.hw,
+    eb.hh
   );
   if (!hit) {
     return;
@@ -384,15 +385,16 @@ function checkOneObstacleAgainstCurBullet(o) {
   if (!curBullet.alive || !o.alive) {
     return;
   }
-  const hit = aabbOverlap(
-    curBullet.x,
-    curBullet.y,
-    PLAYER_BULLET_W,
-    PLAYER_BULLET_W,
-    o.x,
-    o.y,
-    OBSTACLE_W,
-    OBSTACLE_W
+  const ob = obstacleHitboxForTile(o.tile);
+  const hit = hitOverlap(
+    centerCoord(curBullet.x, SPRITE_HALF_8),
+    centerCoord(curBullet.y, SPRITE_HALF_8),
+    PLAYER_BULLET_HITBOX.hw,
+    PLAYER_BULLET_HITBOX.hh,
+    centerCoord(o.x, SPRITE_HALF_16),
+    centerCoord(o.y, SPRITE_HALF_16),
+    ob.hw,
+    ob.hh
   );
   if (!hit) {
     return;
@@ -460,15 +462,16 @@ function checkEnemyVsPlayer(e) {
   if (playerInvuln > 0 || !e.alive) {
     return;
   }
-  const hit = aabbOverlap(
-    playerX + PLAYER_HITBOX_OFFSET,
-    playerY + PLAYER_HITBOX_OFFSET,
-    PLAYER_HITBOX_W,
-    PLAYER_HITBOX_W,
-    e.x,
-    e.y,
-    ENEMY_W,
-    ENEMY_W
+  const eb = enemyHitboxForTile(e.tile);
+  const hit = hitOverlap(
+    centerCoord(playerX, SPRITE_HALF_16),
+    centerCoord(playerY, SPRITE_HALF_16),
+    PLAYER_HITBOX.hw,
+    PLAYER_HITBOX.hh,
+    centerCoord(e.x, SPRITE_HALF_16),
+    centerCoord(e.y, SPRITE_HALF_16),
+    eb.hw,
+    eb.hh
   );
   if (hit) {
     hurtPlayer(e.x, e.y);
@@ -479,15 +482,15 @@ function checkEnemyBulletVsPlayer(b) {
   if (playerInvuln > 0 || !b.alive) {
     return;
   }
-  const hit = aabbOverlap(
-    playerX + PLAYER_HITBOX_OFFSET,
-    playerY + PLAYER_HITBOX_OFFSET,
-    PLAYER_HITBOX_W,
-    PLAYER_HITBOX_W,
-    b.x,
-    b.y,
-    ENEMY_BULLET_W,
-    ENEMY_BULLET_W
+  const hit = hitOverlap(
+    centerCoord(playerX, SPRITE_HALF_16),
+    centerCoord(playerY, SPRITE_HALF_16),
+    PLAYER_HITBOX.hw,
+    PLAYER_HITBOX.hh,
+    centerCoord(b.x, SPRITE_HALF_8),
+    centerCoord(b.y, SPRITE_HALF_8),
+    ENEMY_BULLET_HITBOX.hw,
+    ENEMY_BULLET_HITBOX.hh
   );
   if (hit) {
     b.alive = false;
@@ -499,15 +502,16 @@ function checkObstacleVsPlayer(o) {
   if (playerInvuln > 0 || !o.alive) {
     return;
   }
-  const hit = aabbOverlap(
-    playerX + PLAYER_HITBOX_OFFSET,
-    playerY + PLAYER_HITBOX_OFFSET,
-    PLAYER_HITBOX_W,
-    PLAYER_HITBOX_W,
-    o.x,
-    o.y,
-    OBSTACLE_W,
-    OBSTACLE_W
+  const ob = obstacleHitboxForTile(o.tile);
+  const hit = hitOverlap(
+    centerCoord(playerX, SPRITE_HALF_16),
+    centerCoord(playerY, SPRITE_HALF_16),
+    PLAYER_HITBOX.hw,
+    PLAYER_HITBOX.hh,
+    centerCoord(o.x, SPRITE_HALF_16),
+    centerCoord(o.y, SPRITE_HALF_16),
+    ob.hw,
+    ob.hh
   );
   if (hit) {
     hurtPlayer(o.x, o.y);
@@ -536,7 +540,16 @@ function checkBulletVsBoss(b) {
   if (pierce && b.lastHitEnemy === BOSS_HIT_SENTINEL && b.hitCooldown > 0) {
     return;
   }
-  const hit = aabbOverlap(b.x, b.y, PLAYER_BULLET_W, PLAYER_BULLET_W, getBossX(), getBossY(), BOSS_SIZE, BOSS_SIZE);
+  const hit = hitOverlap(
+    centerCoord(b.x, SPRITE_HALF_8),
+    centerCoord(b.y, SPRITE_HALF_8),
+    PLAYER_BULLET_HITBOX.hw,
+    PLAYER_BULLET_HITBOX.hh,
+    centerCoord(getBossX(), SPRITE_HALF_32),
+    centerCoord(getBossY(), SPRITE_HALF_32),
+    BOSS_HITBOX.hw,
+    BOSS_HITBOX.hh
+  );
   if (!hit) {
     return;
   }
@@ -560,15 +573,15 @@ function checkBossVsPlayer() {
   if (playerInvuln > 0 || !isBossActive()) {
     return;
   }
-  const hit = aabbOverlap(
-    playerX + PLAYER_HITBOX_OFFSET,
-    playerY + PLAYER_HITBOX_OFFSET,
-    PLAYER_HITBOX_W,
-    PLAYER_HITBOX_W,
-    getBossX(),
-    getBossY(),
-    BOSS_SIZE,
-    BOSS_SIZE
+  const hit = hitOverlap(
+    centerCoord(playerX, SPRITE_HALF_16),
+    centerCoord(playerY, SPRITE_HALF_16),
+    PLAYER_HITBOX.hw,
+    PLAYER_HITBOX.hh,
+    centerCoord(getBossX(), SPRITE_HALF_32),
+    centerCoord(getBossY(), SPRITE_HALF_32),
+    BOSS_HITBOX.hw,
+    BOSS_HITBOX.hh
   );
   if (hit) {
     hurtPlayer(getBossX(), getBossY());
