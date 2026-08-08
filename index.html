@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>BAGULAS</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: #000;
+    overflow: hidden;
+    overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    /* iOSのダブルタップ拡大と300msタップ遅延をアプリ全体で殺す。
+       brickboy src/style.css の実績ある指定に合わせる（touch-action:none ではなく
+       manipulation。noneだけでは要素間の余白でダブルタップ拡大が発生する）。 */
+    touch-action: manipulation;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+  canvas {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
+
+  /* --- タッチ操作エリア(body.touch が付いた端末のみ表示。判定はsrc/input.jsのisTouch()に集約) --- */
+  #touch-controls {
+    display: none;
+  }
+
+  /* pointer:coarseのmedia queryは判定の二重管理を招くため使わない。
+     判定はsrc/input.jsのisTouch()に一本化し、src/touch.jsがJS側から
+     body要素へ.touchクラスを付与することで、ここが連動する。 */
+  body.touch {
+    flex-direction: column;
+    justify-content: flex-start;
+    padding-top: env(safe-area-inset-top);
+  }
+  body.touch #screen-wrap {
+    flex: 0 0 auto;
+    display: flex;
+    justify-content: center;
+  }
+  body.touch #touch-controls {
+    display: flex;
+    flex: 0 0 auto;
+    width: 100%;
+    max-width: 480px;
+    margin: 24px auto 0;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom))
+      max(16px, env(safe-area-inset-left));
+    box-sizing: border-box;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  body.touch #touch-dpad {
+    position: relative;
+    width: 132px;
+    height: 132px;
+    flex: 0 0 auto;
+    touch-action: none;
+  }
+  body.touch #touch-dpad .dpad-bg {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: rgba(155, 188, 15, 0.12);
+    border: 2px solid rgba(155, 188, 15, 0.35);
+  }
+  body.touch #touch-dpad .dpad-arrow {
+    position: absolute;
+    color: rgba(155, 188, 15, 0.7);
+    font-size: 22px;
+    line-height: 1;
+    pointer-events: none;
+  }
+  body.touch #touch-dpad .dpad-up { top: 8px; left: 50%; transform: translateX(-50%); }
+  body.touch #touch-dpad .dpad-down { bottom: 8px; left: 50%; transform: translateX(-50%); }
+  body.touch #touch-dpad .dpad-left { left: 8px; top: 50%; transform: translateY(-50%); }
+  body.touch #touch-dpad .dpad-right { right: 8px; top: 50%; transform: translateY(-50%); }
+  body.touch #touch-dpad .dpad-hub {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 10px;
+    height: 10px;
+    margin: -5px 0 0 -5px;
+    border-radius: 50%;
+    background: rgba(155, 188, 15, 0.5);
+    pointer-events: none;
+  }
+
+  body.touch #touch-face {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
+  body.touch #touch-face .face-row {
+    display: flex;
+    gap: 14px;
+  }
+  body.touch .round-btn {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: 2px solid rgba(155, 188, 15, 0.5);
+    background: rgba(155, 188, 15, 0.15);
+    color: #9bbc0f;
+    font: bold 16px sans-serif;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body.touch .round-btn:active {
+    background: rgba(155, 188, 15, 0.35);
+  }
+  body.touch #touch-start {
+    margin-top: 4px;
+    padding: 8px 18px;
+    border-radius: 14px;
+    border: 2px solid rgba(155, 188, 15, 0.5);
+    background: rgba(155, 188, 15, 0.15);
+    color: #9bbc0f;
+    font: bold 12px sans-serif;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body.touch #touch-start:active {
+    background: rgba(155, 188, 15, 0.35);
+  }
+</style>
+</head>
+<body>
+<div id="screen-wrap">
+<canvas id="screen"></canvas>
+</div>
+<div id="touch-controls">
+  <div id="touch-dpad">
+    <div class="dpad-bg"></div>
+    <span class="dpad-arrow dpad-up">▲</span>
+    <span class="dpad-arrow dpad-down">▼</span>
+    <span class="dpad-arrow dpad-left">◀</span>
+    <span class="dpad-arrow dpad-right">▶</span>
+    <span class="dpad-hub"></span>
+  </div>
+  <div id="touch-face">
+    <div class="face-row">
+      <button id="touch-b" class="round-btn" type="button">B</button>
+      <button id="touch-a" class="round-btn" type="button">A</button>
+    </div>
+    <button id="touch-start" type="button">START</button>
+  </div>
+</div>
+<script type="module" src="./src/main.js"></script>
+<script type="module" src="./src/touch.js"></script>
+</body>
+</html>
