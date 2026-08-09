@@ -314,7 +314,13 @@ def _normalize_and_quantize_subject(image, is_background, width, height, dark_bi
                 subject_lums.append(l)
 
     if subject_lums:
-        lo, hi = min(subject_lums), max(subject_lums)
+        # min/max だと1pxの外れ値でレンジが伸び、残り全部が暗側へ潰れる。
+        # 被写体の5〜95パーセンタイルを基準にして、4階調を実際に使い切る。
+        srt = sorted(subject_lums)
+        lo = srt[int(len(srt) * 0.05)]
+        hi = srt[int(len(srt) * 0.95) - 1 if len(srt) > 1 else 0]
+        if hi <= lo:
+            lo, hi = min(subject_lums), max(subject_lums)
     else:
         lo, hi = 0.0, 255.0
     span = hi - lo
@@ -323,6 +329,10 @@ def _normalize_and_quantize_subject(image, is_background, width, height, dark_bi
 
     # dark_bias時: 明部を狭く、暗部を広く割り当てるガンマ(>1)。
     # explosion時: 逆に暗部を狭く、明部を広く割り当てるガンマ(<1)。
+    # dark_bias のガンマは 2.2 だと被写体のほぼ全部が最暗色(index3)へ寄り、
+    # 16x16では「黒い塊」になって何の敵か判別できなくなる(実測: サイドカーは
+    # 不透明158pxのうち130pxがindex3、index0とindex1が0px)。暗めに寄せる意図は
+    # 残しつつ、4階調を使い切る程度まで緩める。
     gamma = 2.2 if dark_bias else (1.0 / 2.2)
 
     out = [TRANSPARENT_INDEX] * (width * height)
@@ -343,6 +353,46 @@ def _normalize_and_quantize_subject(image, is_background, width, height, dark_bi
             elif idx > max_idx:
                 idx = max_idx
             out[p] = idx
+    return out
+
+
+def despeckle_indices(indices, width, height):
+    """孤立した1pxの階調ノイズを、周囲の多数派の階調へ寄せる。
+
+    生成画像には元絵の質感由来の微妙な明暗差が残っており、16x16へ落として
+    0..3へ量子化すると、面の中に1pxだけ違う階調が散る(salt-and-pepper)。
+    DMGのドット絵としては素材のディザに見えてしまい、16x16でのシルエット判別を
+    著しく損なう(実測: リーパー/ホッパー/サンドワームが「暗い塊＋点在する明点」に潰れていた)。
+
+    4近傍のうち、自分と同じ階調が1つも無く、かつ同じ階調が3つ以上ある近傍が
+    存在する場合だけ、その多数派へ置き換える。透明(4)は対象にも多数派にもしない
+    ため、シルエットの輪郭は変わらない。
+    """
+    out = list(indices)
+    for y in range(height):
+        for x in range(width):
+            p = y * width + x
+            v = indices[p]
+            if v == TRANSPARENT_INDEX:
+                continue
+            counts = {}
+            same = 0
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = x + dx, y + dy
+                if nx < 0 or ny < 0 or nx >= width or ny >= height:
+                    continue
+                nv = indices[ny * width + nx]
+                if nv == TRANSPARENT_INDEX:
+                    continue
+                if nv == v:
+                    same += 1
+                counts[nv] = counts.get(nv, 0) + 1
+            if same > 0:
+                continue  # 面の一部。触らない
+            for nv, c in counts.items():
+                if c >= 3:
+                    out[p] = nv
+                    break
     return out
 
 
@@ -372,6 +422,7 @@ def convert_raw_to_indices(name, target, max_idx=3):
 
     dark_bias = (name != "explosion")
     indices = _normalize_and_quantize_subject(small, is_background, w, h, dark_bias, max_idx)
+    indices = despeckle_indices(indices, w, h)
     return indices, w, h
 
 
