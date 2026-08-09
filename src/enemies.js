@@ -748,6 +748,33 @@ function fireEnemyBullet(e) {
 
 // sectionIndex>=2 は STAGES[0].sections の boss セクション(index2)に到達済みという意味。
 // game.js はこれを見てボス戦への遷移トリガに使う。
+// 進行の途中(セクション/ウェーブ)から開始する。検証・確認用の通常API。
+// スポーン順そのものは変えず、開始位置だけを進める。URLの解釈やデバッグ用の
+// 入口はここには置かない(src/debug.js が持ち、ブラウザ単体版からしか読まれない)。
+export function startAtWave(sectionIdx, waveIdx) {
+  let si = sectionIdx | 0;
+  if (si < 0) {
+    si = 0;
+  }
+  if (si > 1) {
+    si = 1;
+  }
+  const waves = STAGES[0].sections[si].waves;
+  let wi = waveIdx | 0;
+  if (wi < 0) {
+    wi = 0;
+  }
+  if (wi >= waves.length) {
+    wi = waves.length - 1;
+  }
+  sectionIndex = si;
+  waveCursor = wi;
+  waveMemberIndex = 0;
+  waveGapTimer = 0;
+  // 開始位置を進めた時点を、そのセクションの起点として扱う(distanceは0から進む)。
+  sectionStartDistance = 0;
+}
+
 export function isAtBossSection() {
   return sectionIndex >= 2;
 }

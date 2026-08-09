@@ -35,6 +35,7 @@ import {
   clearEnemies,
   setLoop,
   getSectionIndex,
+  startAtWave,
 } from './enemies.js';
 import { STAGES } from './stages.js';
 import {
@@ -52,6 +53,13 @@ import {
 // x: スプライト幅16pxのため右端は 160-16=144 まで。
 // y: 下半分の走行レーンに制限（敵は上から出現させる想定のため自機はプレイエリア下側に固定）。
 //    上限は中央よりやや下の64、下限はスプライト高16pxを考慮した画面下端128。
+//
+// Y_MIN を下げるときの注意(余裕は8pxしかない): ガンワゴンは画面上部(y=-16..24px)に
+// 居座り、撃った回数が上限に達して初めて離脱する。一方で敵は自機と中心距離が
+// x/yとも32px以内だと撃たない(近距離発射抑止)。ガンワゴンの中心yは最大32px、
+// 自機の中心yは最小 Y_MIN+8 = 72px なので、差は最小40px = 抑止閾値32pxより8px大きい。
+// Y_MIN を56未満にすると抑止が成立し、ガンワゴンが撃てない＝離脱できないまま
+// 画面に残り続ける。可動範囲を広げる場合はガンワゴン側に時間での退場も持たせること。
 const X_MIN = 0;
 const X_MAX = 144;
 const Y_MIN = 64;
@@ -181,6 +189,18 @@ export function initGame() {
   distance = 0;
   resetPlayerState();
   resetEnemies();
+}
+
+// 進行の途中から、プレイ中の状態で開始する。検証・確認用の通常API。
+// initGame() の直後に呼ぶ。invulnFrames を大きく取ると被弾で止まらずに
+// 後半のウェーブまで到達できるので、自動プレイでの実測に使える。
+// URLの解釈はここではしない(src/debug.js が持つ)。
+export function startPlayAt(sectionIdx, waveIdx, invulnFrames) {
+  gameState = STATE.PLAY;
+  startAtWave(sectionIdx, waveIdx);
+  if (invulnFrames > 0) {
+    playerInvuln = invulnFrames;
+  }
 }
 
 export function getState() {

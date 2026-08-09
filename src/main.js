@@ -5,6 +5,9 @@ import { initGfx } from './gfx.js';
 import { setRaster } from './raster.js';
 import * as canvasRaster from './raster-canvas.js';
 import { initApp, step, render } from './app.js';
+// URLクエリ(?wave= 等)で途中のウェーブから開始するための入口。クエリが無ければ何もしない。
+// ここでしか import しないので、ソフトカート経路(=brickboyの同梱ビルド)には含まれない。
+import { applyDebugStart } from './debug.js';
 
 const STEP_MS = 1000 / 60; // 固定ステップ幅（≒16ms）
 const MAX_CATCHUP = 1; // 重い場面でも弾だけワープさせず、ロジック全体を一緒にスローにする（実機GB風）
@@ -18,6 +21,9 @@ function main() {
 
   const canvas = document.getElementById('screen');
   initGfx(canvas);
+
+  // initApp()(=initGame)のあとに適用する。指定が無ければ通常どおりタイトルから始まる。
+  applyDebugStart(location.search);
 
   let last = performance.now();
   let acc = 0;
