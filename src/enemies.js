@@ -125,18 +125,56 @@ const ENEMY_FIRE_LIMIT_SPREAD_BY_KIND = [1, 1, 1, 2, 1, 1, 1, 1, 2, 1, 1]; // MO
 // どちらも「通常プレイでは発射回数側が先に成立し、時間側は至近距離での張り付きに対してのみ
 // バックストップとして働く」ことを検証ステップで実測して確認する(このコメントは設計時点の
 // 見積りであり、実測結果と乖離があれば値を調整すること)。
-const ENEMY_LEAVE_TIME_LIMIT_BY_KIND = [0, 0, 0, 900, 0, 0, 0, 0, 1200, 0, 0]; // GUNWAGON=900f, MOTHER=1200f
+// 発射(射出)回数に達する前でも、この時間で離脱させる保険。0=無効。
+// 対象は「その場に留まる/自機に付き従う」種、つまり自機が近くに居座ると
+// 近距離発射抑止(±32px)で永久に発射回数を満たせなくなり得る種。
+// GUNWAGON=900f(停留)、CHASER=900f(並走)、MOTHER=1200f(射出が多いぶん長め)。
+// 通常プレイでは発射回数のほうが先に来るので、これが効くのは居座られた時だけ。
+// 並び順は KIND_* の番号どおり(SCATTER0/DRIFTER1/REAPER2/GUNWAGON3/WHEELSAW4/
+// HOPPER5/SANDWORM6/SIDECAR7/MOTHER8/MIRAGE9/CHASER10)。
+const ENEMY_LEAVE_TIME_LIMIT_BY_KIND = [0, 0, 0, 900, 0, 0, 0, 0, 1200, 0, 900];
 
 // 発射上限に達した個体が離脱する時にkind固有の後始末(移動状態の切替)を行う関数テーブル。
 // 何もしないkindはleaveNoneを使う(ENEMY_MOVE_BY_KINDと同じ並び順: SCATTER/DRIFTER/REAPER/GUNWAGON/WHEELSAW)。
 function leaveNone() {}
 
-// 画面内判定(「一度でも画面内に入ったか」の判定用)。既存の画面外消滅判定(下端160px/上端-16px)と
-// 整合する範囲を採る。x方向はREAPER_X_EXIT_MIN/MAX_PXと同じ余裕(スプライト16px分)を使う。
+// 画面内判定(「一度でも画面内に入ったか」の判定用)。同時に「一度入った個体が出たら消す」消滅判定の
+// 箱としても全kind共通で使う(updateOneEnemy参照)。x方向の余裕はスプライト16px分。
 const ONSCREEN_X_MIN_PX = -16;
 const ONSCREEN_X_MAX_PX = 176;
 const ONSCREEN_Y_MIN_PX = -16;
 const ONSCREEN_Y_MAX_PX = 160;
+// 「まだ一度も画面内に入っていない」個体に許す、上の箱からのはみ出し余裕(px)。
+// 入場待機位置は前方出現で最大 -16-4*COLUMN_Y_SPACING(20) = -96px、背後出現で最大 144+80 = 224px、
+// xは常に画面内(GATE_X_MIN/SPREAD)なので、128pxの余裕はどの正規の待機位置も絶対に巻き込まない。
+// これが無いと「入場待機中に横成分で画面外へ流れ出た個体」がeverOnscreenを立てられないまま
+// 永久に生き続け、ENEMIESプールの枠を食い潰す(実測で発生。REAPERは本改修前から同じ穴があった)。
+const NEVER_ONSCREEN_MARGIN_PX = 128;
+
+// --- 離脱/横成分の共通語彙(docs/enemies.md「動きの語彙」) ---
+// 個体ごとの離脱方向。既存のkind別flagsビットは0,1,2しか使っていないため、bit3(=8)を
+// 全kind共通の「この個体はどちら側へ抜けるか」に充てる(initEnemyFromWaveでLFSR抽選)。
+const LEAVE_SIDE_RIGHT_FLAG = 8; // e.flags bit3: 1=右へ抜ける、0=左へ抜ける
+// 横流れ: 速く最大速度へ達する=「流れる」ように真横へ抜ける
+const LEAVE_SIDE_VX_STEP = 24;
+const LEAVE_SIDE_VX_MAX = 224;
+// 弧離脱: 横流れよりゆっくり加速する=軌道が弧を描いて見える
+const LEAVE_ARC_VX_STEP = 8;
+const LEAVE_ARC_VX_MAX = 192;
+// 反転上昇: 上昇へ切り返す瞬間に1回だけ入れる横方向の傾き(ランプしない)
+const LEAVE_CLIMB_VX = 64;
+
+// 個体の離脱方向(LEAVE_SIDE_RIGHT_FLAG)へ向けてvxを毎フレーム加速し、上限でclampして積分する。
+// 縦方向(vy)には一切触れないため、「敵の縦速度はスクロールの1/2(128)以下」の不変条件に影響しない。
+function rampVx(e, step, max) {
+  const sign = e.flags & LEAVE_SIDE_RIGHT_FLAG ? 1 : -1;
+  e.vx += sign * step;
+  const mag = e.vx < 0 ? -e.vx : e.vx;
+  if (mag > max) {
+    e.vx = sign * max;
+  }
+  e.x += e.vx;
+}
 
 // EFFECTS.kind の使い分け（weapons.js の kind=0=ダイナマイト爆発と衝突しない値を使う）
 export const EFFECT_KIND_ENEMY_EXPLOSION = 1; // 敵/障害物撃破の爆発
@@ -154,17 +192,24 @@ const COLUMN_Y_SPACING = f(20); // 縦列の初期縦間隔(ドリフターの�
 const SNAKE_STEP = 128; // 振れ幅2倍に合わせてstepも2倍にし、半周期フレーム数をほぼ維持する(ドリフター蛇行フェーズ)
 const SNAKE_AMPLITUDE = f(40); // 蛇行の振れ幅。anchorXから±40pxで大きく横へ振る
 
+// --- スキャッター専用: V字で広がった側へそのまま横断を続ける(巡航=滑走) ---
+const SCATTER_SWEEP_VX = 112; // 広がった向きへの横断速度。ENEMY_VY(96)と同オーダー
+
 // --- ドリフター専用: 縦列→蛇行の切替しきい値 ---
 const DRIFTER_SNAKE_START_Y = f(72); // 画面高144pxの半分あたり(目安どおり)を超えたら蛇行に切り替える
 const DRIFTER_TRANSITIONED_FLAG = 2; // e.flags bit1: 蛇行フェーズへ切替済み
 const DRIFTER_LEAVING_FLAG = 4; // e.flags bit2: 発射上限(1回)に到達し離脱シーケンスへ入った
+// 離脱(八の字): 蛇行の振動を止めず、振動中心(anchorX)だけを個体の離脱方向へ毎フレーム動かす。
+// 振動と中心移動が重なることで交差する軌跡になり、最終的に片側へ抜ける。
+const DRIFTER_LEAVE_ANCHOR_STEP = f(1);
 
 // --- リーパー専用: 斜めに流れて短い滞在で抜ける ---
 const REAPER_VY = 112; // ENEMY_VY(96)よりやや速め。128以下は守りつつ「速い」印象を出す
-const REAPER_VX = f(1); // 1px/frame。横方向の移動が支配的になり、y到達より先にx方向で画面外へ抜ける
+const REAPER_VX = f(1); // 1px/frame。横方向の移動が支配的になり、y到達より先にx方向で画面外へ抜ける(横速度の上限)
+const REAPER_VX_STEP = f(1) >> 3; // 弧離脱: 初速REAPER_VX>>1からこの量ずつ加速し、REAPER_VXで頭打ちにする
 const REAPER_ENTRY_X_SPACING = f(6); // メンバーごとに互い違いに軽くxをずらし重なりを避ける(V字と同じ考え方)
-const REAPER_X_EXIT_MIN_PX = -16; // これより左は画面外
-const REAPER_X_EXIT_MAX_PX = 176; // これより右は画面外(スプライト16px分の余裕を見る)
+// 旧REAPER_X_EXIT_MIN/MAX_PXはONSCREEN_X_MIN/MAX_PXと同値で、x方向の画面外消滅が全kind共通化された
+// (updateOneEnemy参照)ため削除した。
 
 // --- ガンワゴン専用: 画面上部に居座り左右へ滑る。降りてこない ---
 const GUNWAGON_TARGET_Y = f(24); // 居座りy。目安f(16)〜f(32)の中間
@@ -188,6 +233,7 @@ const HOPPER_LAND_FRAMES = 30; // 着地硬直の長さ。docs「障害物拘束
 // 「狙って撃てる」基準として採用する(実測はverify手順で確認・報告する)。
 const HOPPER_LANDED_FLAG = 1; // e.flags bit0: 着地硬直中
 const HOPPER_FIRE_LIMIT = 1; // 一撃離脱: 最初の着地硬直で1回だけ真下へ撃つ
+const HOPPER_LEAVING_FLAG = 2; // e.flags bit1: 1発撃ち終えて反転上昇の離脱へ入った(跳躍ステートマシンを抜ける)
 const HOPPER_BULLET_DOWN_DIR = 8; // DIR16[8] = 真下固定(自機を狙わない。docs「真下へ1発」)
 
 // --- サンドワーム専用: 潜行(無敵・判定なし)→予告(砂煙)→浮上して放射3発(docs/enemies.md #6) ---
@@ -216,8 +262,10 @@ const ENEMY_BULLET_KIND_LOB = 1; // ENEMY_BULLETS.kindの特殊値: 山なり(�
 // --- マザー専用: ゆっくり降下しながら左右へ。ハッチからスキャッターを連続射出(docs/enemies.md #14) ---
 const MOTHER_TARGET_Y = f(24); // 居座り開始y(ガンワゴンと同じ帯)
 const MOTHER_DRIFT_VY = 24; // 居座り後もゆっくり降下し続ける速度(docs「ゆっくり降下しながら左右へ」)
-const MOTHER_SWAY_AMPLITUDE = f(28); // 左右の揺れ幅(ガンワゴンの端から端スライドより控えめ)
-const MOTHER_SWAY_STEP = 64; // 揺れの速さ
+// 巡航は「滑走」(docs/enemies.md)。小さい揺れではなく、ガンワゴンと同じ端から端へのスライド+バウンドにする。
+const MOTHER_SLIDE_VX = 64; // 左右へ滑る速度(GUNWAGON_SLIDE_VX=80より遅く、大型らしい重さを出す)
+const MOTHER_MIN_X = f(0);
+const MOTHER_MAX_X = f(144); // 画面幅160-スプライト幅16
 const MOTHER_SETTLED_FLAG = 2; // e.flags bit1: 居座り位置へ到達済み(bit0は揺れ方向で使用中)
 const MOTHER_LEAVING_FLAG = 4; // e.flags bit2: 射出上限に到達し離脱シーケンスへ入った
 const MOTHER_CHILD_HP = 1; // 射出されたスキャッターの耐久。プール占有時間を短く保つためあえて低くする
@@ -501,9 +549,20 @@ function edgeParamsForGate(gate) {
 function initScatter(e, wave, memberIndex, gate) {
   // 元KIND_V。V字編隊で降り、中央から左右へ広がる(docs/enemies.md #1)。既存V字ロジックをそのまま流用。
   const { vySign, edgeY, edgeStep } = edgeParamsForGate(gate);
-  e.x = waveBaseX + vOffsetX(memberIndex);
+  const off = vOffsetX(memberIndex);
+  e.x = waveBaseX + off;
   e.y = edgeY + edgeStep * vHalfIndex(memberIndex) * V_Y_STEP;
-  e.vx = 0;
+  // V字で広がった側へそのまま横断を続ける(巡航=滑走)。中央の先頭機(off===0)は広がる向きを
+  // 持たないので、個体ごとの離脱方向(LEAVE_SIDE_RIGHT_FLAG)をそのまま横断方向に使う。
+  let sweepSign;
+  if (off > 0) {
+    sweepSign = 1;
+  } else if (off < 0) {
+    sweepSign = -1;
+  } else {
+    sweepSign = e.flags & LEAVE_SIDE_RIGHT_FLAG ? 1 : -1;
+  }
+  e.vx = sweepSign * SCATTER_SWEEP_VX;
   e.vy = vySign * ENEMY_VY;
 }
 
@@ -526,7 +585,9 @@ function initReaper(e, wave, memberIndex, gate) {
   const sign = (memberIndex & 1) === 1 ? -1 : 1;
   e.x = waveBaseX + sign * half * REAPER_ENTRY_X_SPACING;
   e.y = edgeY + edgeStep * half * V_Y_STEP;
-  e.vx = gate === GATES.FRONT_LEFT ? -REAPER_VX : REAPER_VX; // 出た側へさらに流れて速く抜ける
+  // 出た側へさらに流れて速く抜ける。弧を描かせるため初速は上限の半分から始め、moveReaperが
+  // 毎フレームREAPER_VX_STEPずつ同じ向きへ加速していく(上限REAPER_VX)。
+  e.vx = gate === GATES.FRONT_LEFT ? -(REAPER_VX >> 1) : REAPER_VX >> 1;
   e.vy = REAPER_VY;
   if (memberIndex === 0) {
     // 編隊の先頭メンバーがスポーンする瞬間に1回だけ、全滅ボーナス追跡を開始する。
@@ -582,6 +643,9 @@ function initSidecar(e, wave, memberIndex, gate) {
   e.anchorX = waveBaseX;
   e.vx = 0;
   e.vy = vySign * SIDECAR_VY;
+  // 進入は「斜行」(docs/enemies.md)。往復の初期タイマー位置を0(中心)ではなく振れ幅の途中から
+  // 始めることで、入場直後から片側へ流れながら降りてくる=斜めに入ってくる印象を作る。
+  e.timer = e.flags & LEAVE_SIDE_RIGHT_FLAG ? -(SIDECAR_AMPLITUDE >> 1) : SIDECAR_AMPLITUDE >> 1;
 }
 
 function initMother(e, wave, memberIndex, gate) {
@@ -652,6 +716,14 @@ function initEnemyFromWave(e, wave, memberIndex, gate) {
     ? ENEMY_FIRE_LIMIT_MIN_BY_KIND[kind] + rndRange(ENEMY_FIRE_LIMIT_SPREAD_BY_KIND[kind])
     : 0;
 
+  // 個体ごとの離脱/横成分の向きを抽選する(同一ウェーブの全機が同じ側へ抜ける単調さを避ける)。
+  // ホイールソーだけは対称の跳ね返り運動そのものが個体差になるため対象外にし、LFSRを無駄に進めない。
+  if (kind !== KIND_WHEELSAW) {
+    if (rndRange(2) === 1) {
+      e.flags |= LEAVE_SIDE_RIGHT_FLAG;
+    }
+  }
+
   ENEMY_INIT_BY_KIND[kind](e, wave, memberIndex, gate);
 }
 
@@ -707,13 +779,15 @@ function spawnPendingWave() {
 
 function moveNone() {}
 
+function moveScatter(e) {
+  // 巡航=滑走。V字で広がった向き(initScatterで決めたvx)へそのまま横断し続ける。
+  // 画面端でclampしないので、そのまま横へ抜けて共通のx方向画面外判定で消える(=離脱は横流れ)。
+  e.x += e.vx;
+}
+
 function moveDrifter(e) {
-  if (e.flags & DRIFTER_LEAVING_FLAG) {
-    // 1発撃って離脱シーケンスに入った後は蛇行をやめる。xはそのまま(動かさない)、
-    // yは共通コード(updateOneEnemyのvy積分)にまっすぐ任せて画面外(下)へ抜ける。
-    return;
-  }
-  if ((e.flags & DRIFTER_TRANSITIONED_FLAG) === 0) {
+  const leaving = (e.flags & DRIFTER_LEAVING_FLAG) !== 0;
+  if (!leaving && (e.flags & DRIFTER_TRANSITIONED_FLAG) === 0) {
     // 縦列フェーズ: xは動かさない(vx=0のまま)。中程を超えたら蛇行フェーズへ切り替える。
     if (e.y >= DRIFTER_SNAKE_START_Y) {
       e.flags |= DRIFTER_TRANSITIONED_FLAG;
@@ -721,6 +795,12 @@ function moveDrifter(e) {
       e.timer = 0;
     }
     return;
+  }
+  // 離脱(八の字): 蛇行の振動は止めず、振動中心(anchorX)だけを個体の離脱方向へ毎フレーム動かす。
+  // 振動と中心移動が重なって交差する軌跡になり、最終的に片側(または下)へ抜ける。
+  if (leaving) {
+    const sign = e.flags & LEAVE_SIDE_RIGHT_FLAG ? 1 : -1;
+    e.anchorX += sign * DRIFTER_LEAVE_ANCHOR_STEP;
   }
   // 蛇行フェーズ(元KIND_SNAKEのロジックを流用)。折り返し(flipped)のたびに1回だけ
   // atkTimerを予備動作の先頭(TELEGRAPH_SLOWDOWN_FRAMES+1)へセットし、既存の減速→フラッシュ→発射
@@ -745,17 +825,37 @@ function moveDrifter(e) {
     }
   }
   e.x = e.anchorX + e.timer;
-  if (flipped) {
+  if (flipped && !leaving) {
+    // 離脱中はもう撃たないので、折り返しでのatkTimer再トリガはスキップする(二重発火防止)。
     e.atkTimer = TELEGRAPH_SLOWDOWN_FRAMES + 1;
   }
 }
 
 function moveReaper(e) {
-  e.x += e.vx; // 斜め軌道の横方向はここで積む(縦方向は共通コードのvy積分に任せる)
+  // 斜め軌道の横方向はここで積む(縦方向は共通コードのvy積分に任せる)。
+  // 出た側の向きへREAPER_VX_STEPずつ加速し、REAPER_VXで頭打ちにする(=弧を描いてサイドへ抜ける)。
+  if (e.vx < 0) {
+    e.vx -= REAPER_VX_STEP;
+    if (e.vx < -REAPER_VX) {
+      e.vx = -REAPER_VX;
+    }
+  } else {
+    e.vx += REAPER_VX_STEP;
+    if (e.vx > REAPER_VX) {
+      e.vx = REAPER_VX;
+    }
+  }
+  e.x += e.vx;
 }
 
 function moveGunwagon(e) {
-  // 左右へ滑る(画面端でclampして反転)。降下中/居座り中/退場中いずれのフェーズでも横滑りは続ける。
+  if (e.flags & GUNWAGON_LEAVING_FLAG) {
+    // 反転上昇中は画面端でのclamp/反転をしない(端で跳ねると切り返しの印象が薄れるため)。
+    // そのまま斜め上へ素通りし、共通の画面外判定(上端または左右)で消える。
+    e.x += e.vx;
+    return;
+  }
+  // 左右へ滑る(画面端でclampして反転)。降下中/居座り中どちらのフェーズでも横滑りは続ける。
   e.x += e.vx;
   if (e.x < GUNWAGON_MIN_X) {
     e.x = GUNWAGON_MIN_X;
@@ -812,6 +912,12 @@ function moveHopper(e) {
   // 跳ねながら降下し、着地の瞬間だけ完全停止する(その停止そのものが予備動作)。
   // 停止中(HOPPER_LANDED_FLAG)に1回だけ真下へ撃つ。fireLimitの共通atkTimerパイプラインは
   // 使わない(ENEMY_CAN_FIRE_BY_KIND[KIND_HOPPER]=false)ため、ここでfireCountを直接管理する。
+  if (e.flags & HOPPER_LEAVING_FLAG) {
+    // 一撃離脱: 撃ち終えたら跳躍ステートマシンへは戻らず、反転上昇で斜め上へ抜けるだけにする
+    // (vyの積分は共通コード=updateOneEnemyが担当するので、ここではvxのみ積む)。
+    e.x += e.vx;
+    return;
+  }
   e.timer += 1;
   if ((e.flags & HOPPER_LANDED_FLAG) === 0) {
     if (e.timer >= HOPPER_AIR_FRAMES) {
@@ -821,6 +927,12 @@ function moveHopper(e) {
       if (e.fireCount < HOPPER_FIRE_LIMIT) {
         fireHopperBullet(e);
         e.fireCount += 1;
+        if (e.fireCount >= HOPPER_FIRE_LIMIT) {
+          // 一撃離脱(離脱=反転上昇)。来た側(上)へ、個体ごとの向きへ斜めに切り返して抜ける。
+          e.flags |= HOPPER_LEAVING_FLAG;
+          e.vx = e.flags & LEAVE_SIDE_RIGHT_FLAG ? LEAVE_CLIMB_VX : -LEAVE_CLIMB_VX;
+          e.vy = -ENEMY_VY;
+        }
       }
     }
     return;
@@ -834,9 +946,11 @@ function moveHopper(e) {
 
 function moveSidecar(e) {
   // 左右に大きく往復しながら降下する(docs/enemies.md #7)。1発撃って離脱シーケンスへ入ったら
-  // (SIDECAR_LEAVING_FLAG)往復をやめ、まっすぐ画面外へ抜ける。振動ロジック自体はドリフターの
+  // (SIDECAR_LEAVING_FLAG)往復をやめ、横流れでサイドへ抜ける。振動ロジック自体はドリフターの
   // 蛇行フェーズと同形(timer+anchorXの往復)を流用する。
   if (e.flags & SIDECAR_LEAVING_FLAG) {
+    // 離脱=横流れ。往復をやめ、個体ごとの向きへ速く加速しながらサイドへ抜ける。
+    rampVx(e, LEAVE_SIDE_VX_STEP, LEAVE_SIDE_VX_MAX);
     return;
   }
   const dir = e.flags & 1;
@@ -856,10 +970,12 @@ function moveSidecar(e) {
 
 function moveMother(e) {
   // 正面から入り、MOTHER_TARGET_Yへ達したら居座りに移る(ガンワゴンのSETTLEDと同形)。
-  // ただしガンワゴンと違い居座り後も止まらず、ゆっくり降下し続けながら左右へ揺れる
-  // (docs/enemies.md #14「ゆっくり降下しながら左右へ」)。射出上限に達すると
-  // leaveMotherがLEAVING_FLAGを立て、以後は揺れを止めてまっすぐ上へ抜ける。
+  // ただしガンワゴンと違い居座り後も止まらず、ゆっくり降下し続けながら画面の端から端へ滑走する
+  // (docs/enemies.md #14「ゆっくり降下しながら左右へ」/巡航=滑走)。射出上限に達すると
+  // leaveMotherがLEAVING_FLAGを立て、以後は弧を描きながら来た側(上)へ抜ける。
   if (e.flags & MOTHER_LEAVING_FLAG) {
+    // 離脱=弧離脱。横流れよりゆっくり加速するので、上昇と合わさって弧を描いて見える。
+    rampVx(e, LEAVE_ARC_VX_STEP, LEAVE_ARC_VX_MAX);
     return;
   }
   if ((e.flags & MOTHER_SETTLED_FLAG) === 0) {
@@ -867,29 +983,27 @@ function moveMother(e) {
       e.y = MOTHER_TARGET_Y;
       e.vy = MOTHER_DRIFT_VY;
       e.flags |= MOTHER_SETTLED_FLAG;
-      e.anchorX = e.x;
-      e.timer = 0;
+      e.vx = e.flags & LEAVE_SIDE_RIGHT_FLAG ? MOTHER_SLIDE_VX : -MOTHER_SLIDE_VX;
     }
     return;
   }
-  const dir = e.flags & 1;
-  if (dir === 0) {
-    e.timer += MOTHER_SWAY_STEP;
-    if (e.timer >= MOTHER_SWAY_AMPLITUDE) {
-      e.flags |= 1;
-    }
-  } else {
-    e.timer -= MOTHER_SWAY_STEP;
-    if (e.timer <= -MOTHER_SWAY_AMPLITUDE) {
-      e.flags &= ~1;
-    }
+  // 滑走: 端から端まで移動し、画面端でバウンドする(ガンワゴンと同方式)。
+  e.x += e.vx;
+  if (e.x < MOTHER_MIN_X) {
+    e.x = MOTHER_MIN_X;
+    e.vx = -e.vx;
+  } else if (e.x > MOTHER_MAX_X) {
+    e.x = MOTHER_MAX_X;
+    e.vx = -e.vx;
   }
-  e.x = e.anchorX + e.timer;
 }
 
 function moveMirage(e) {
   if (e.flags & MIRAGE_LEAVING_FLAG) {
-    return; // 発射後は追従をやめる。e.vyは初期値のまま(上昇中)なので、そのまま素通りして抜ける
+    // 発射後は追従をやめる。e.vyは初期値のまま(上昇中)で、leaveMirageが入れた斜め成分(vx)を
+    // 積みながら上へ抜ける(=反転上昇)。画面端でのclampもしない(そのままサイドへ抜けてよい)。
+    e.x += e.vx;
+    return;
   }
   e.vx = -curPlayerVX; // 自機の左右の動きを反転して真似る
   e.x += e.vx;
@@ -902,7 +1016,10 @@ function moveMirage(e) {
 
 function moveChaser(e) {
   if (e.flags & CHASER_LEAVING_FLAG) {
-    return; // 発射後はleaveChaserが設定したvx=0/vy=-ENEMY_VYのまま素通りして抜ける
+    // 離脱=横流れ。vyは並走成立時の値(CHASER_VY_MAXで128以下にcap済み)のまま凍結し、
+    // 横方向だけ個体ごとの向きへ速く加速してサイドへ抜ける。
+    rampVx(e, LEAVE_SIDE_VX_STEP, LEAVE_SIDE_VX_MAX);
+    return;
   }
   const side = e.flags & CHASER_SIDE_RIGHT_FLAG ? 1 : -1;
   let targetX = curPlayerX + side * CHASER_SIDE_OFFSET_PX;
@@ -947,18 +1064,22 @@ function moveChaser(e) {
   }
 }
 
+// 浮上後のサンドワーム専用。潜行中はupdateOneEnemy冒頭でupdateSandwormPreへ完全にバイパスされ、
+// この関数には到達しない(=このテーブル項は「浮上後」だけを意味する)。浮上後の離脱は横流れ:
+// vyはupdateSandwormPreが入れたENEMY_VYのまま共通コードが積分し、ここでは横方向だけ加速する。
+function moveSandwormLeave(e) {
+  rampVx(e, LEAVE_SIDE_VX_STEP, LEAVE_SIDE_VX_MAX);
+}
+
 // kind→毎フレーム移動関数のディスパッチテーブル(段階3の決定事項: if の羅列にしない)。
-// サンドワーム(KIND_SANDWORM)は潜行中updateOneEnemyの先頭で専用分岐(updateSandwormPre)へ
-// バイパスされるため、ここではmoveNoneを割り当てる(浮上後は共通パイプラインへ合流し、
-// 単に真下へ抜けるだけでよい=横移動不要)。
 const ENEMY_MOVE_BY_KIND = [
-  moveNone,
+  moveScatter,
   moveDrifter,
   moveReaper,
   moveGunwagon,
   moveWheelsaw,
   moveHopper,
-  moveNone,
+  moveSandwormLeave,
   moveSidecar,
   moveMother,
   moveMirage,
@@ -969,36 +1090,40 @@ const ENEMY_MOVE_BY_KIND = [
 // 呼ばれるのはfireEnemyBullet直後、fireCountがfireLimitに達した1フレームのみ(updateOneEnemy参照)。
 
 function leaveDrifter(e) {
-  // GUNWAGON_LEAVING_FLAGと同じパターンの一般化: フラグを立てて以後の蛇行を止め、
-  // まっすぐ画面外(下)へ抜ける(vy自体はすでに正=前方出現の進行方向のまま、向きは変えない)。
+  // 離脱=八の字。蛇行は止めず、moveDrifterが振動中心(anchorX)を個体の離脱方向へ動かし始める。
+  // vy自体はすでに正(前方出現の進行方向)のままで、向きは変えない。
   e.flags |= DRIFTER_LEAVING_FLAG;
 }
 
 function leaveGunwagon(e) {
-  // 画面上部に居座っているため、退場は来た側(上)へ抜ける = vyを負にする。
+  // 離脱=反転上昇。画面上部に居座っているため来た側(上)へ切り返し、同時に個体ごとの向きへ
+  // 斜めの横成分を1回だけ入れる(以後moveGunwagonがclampせずそのまま積む)。
   e.vy = -ENEMY_VY;
+  e.vx = e.flags & LEAVE_SIDE_RIGHT_FLAG ? LEAVE_CLIMB_VX : -LEAVE_CLIMB_VX;
   e.flags |= GUNWAGON_LEAVING_FLAG;
 }
 
 function leaveSidecar(e) {
-  // leaveDrifterと同形: 往復をやめ、まっすぐ画面外(下)へ抜ける。
+  // 離脱=横流れ。往復をやめ、moveSidecarがrampVxでサイドへ加速する。
   e.flags |= SIDECAR_LEAVING_FLAG;
 }
 
 function leaveMother(e) {
-  // leaveGunwagonと同形: 居座っているため退場は来た側(上)へ抜ける。
+  // 離脱=弧離脱。来た側(上)へ抜ける向きは維持し、横はmoveMotherがゆっくり加速して弧を描く。
   e.vy = -ENEMY_VY;
   e.flags |= MOTHER_LEAVING_FLAG;
 }
 
 function leaveMirage(e) {
+  // 離脱=反転上昇。もともと上昇しながら入場している(背後出現)ので、ここでは斜め成分だけを足す。
   e.flags |= MIRAGE_LEAVING_FLAG;
+  e.vx = e.flags & LEAVE_SIDE_RIGHT_FLAG ? LEAVE_CLIMB_VX : -LEAVE_CLIMB_VX;
 }
 
 function leaveChaser(e) {
+  // 離脱=横流れ。vx/vyは並走成立時点の値のまま(vyは自機と同等の縦速度でCHASER_VY_MAX以下)にし、
+  // そこからmoveChaserがrampVxで横へ加速してサイドへ抜ける。
   e.flags |= CHASER_LEAVING_FLAG;
-  e.vx = 0;
-  e.vy = -ENEMY_VY; // 来た側(上)へ抜ける
 }
 
 const ENEMY_LEAVE_BY_KIND = [
@@ -1062,43 +1187,39 @@ function updateOneEnemy(e) {
   // 一度も画面内に入ったことがない個体(スポーン直後、画面外の入場待機位置)は画面外消滅判定の
   // 対象にしない。ここで一度入ったことを記録できたときだけ、以下の消滅判定を以後有効にする
   // (「一度画面内に入った個体が完全に外へ出たら消す」。docs/enemies.md「雑魚敵は一撃離脱」節)。
+  const px = toPx(e.x);
+  const py = toPx(e.y);
   if (!e.everOnscreen) {
     if (
-      toPx(e.x) > ONSCREEN_X_MIN_PX &&
-      toPx(e.x) < ONSCREEN_X_MAX_PX &&
-      toPx(e.y) > ONSCREEN_Y_MIN_PX &&
-      toPx(e.y) < ONSCREEN_Y_MAX_PX
+      px > ONSCREEN_X_MIN_PX &&
+      px < ONSCREEN_X_MAX_PX &&
+      py > ONSCREEN_Y_MIN_PX &&
+      py < ONSCREEN_Y_MAX_PX
     ) {
       e.everOnscreen = true;
     }
   }
 
-  // e.vy(現在値)の符号で進行方向を見る。前方出現かつ下降中(vy>=0)は下端を抜けたら消え、
-  // 上方向へ抜ける途中(vy<0。ガンワゴンの退場、または将来の背後出現)は上端を抜けたら消える。
-  // 逆側の判定を入れると、縦列/蛇行の後続メンバーが画面外の入場待機位置(まだ側)にいるだけで
-  // 誤って消えてしまうため、進行方向側のみ見る。everOnscreenでさらに「まだ一度も入っていない」
-  // 個体を除外し、スポーン直後の全滅を防ぐ。
-  if (e.everOnscreen) {
-    if (e.vy >= 0) {
-      if (toPx(e.y) > 160) {
-        if (e.kind === KIND_REAPER) {
-          reaperTrackOnEscape(e.formationId);
-        }
-        e.alive = false;
-        return;
-      }
-      // リーパーのみ、x方向の画面外もチェックする(vxが支配的な斜め軌道で、y到達より先に
-      // 左右へ抜けるのが正しい滞在時間の短さになるため)。他kindはx方向が常に画面内に収まる
-      // 設計(V字のclamp/ガンワゴン・ホイールソーのclamp)なので、ここで判定すると誤爆する。
-      if (e.kind === KIND_REAPER && (toPx(e.x) < REAPER_X_EXIT_MIN_PX || toPx(e.x) > REAPER_X_EXIT_MAX_PX)) {
-        reaperTrackOnEscape(e.formationId);
-        e.alive = false;
-        return;
-      }
-    } else if (toPx(e.y) < -16) {
-      e.alive = false;
-      return;
+  // 画面外消滅は全kind共通で「一度画面内(ONSCREEN_*の箱)に入った個体が、その箱のX/Yいずれかの
+  // 境界を割ったら消す」に一本化する。旧実装はvyの符号で進行方向側のY境界だけを見て、X方向は
+  // リーパーだけ特別扱いしていたが、全種が横成分を持つようになった今はサイドへ抜けた個体が
+  // 消えずに残ってしまう。everOnscreenで「まだ一度も画面内に入っていない」入場待機中の個体を
+  // 除外する仕組みはそのまま(これが無いとスポーン直後に全滅する)。
+  // まだ一度も入っていない個体はNEVER_ONSCREEN_MARGIN_PXだけ広い箱で見る(入場待機位置は
+  // すべてこの内側に収まるので誤爆しない)。これにより「入場待機中に横へ流れ出て二度と
+  // 画面へ入らない個体」も最終的には消え、プールの枠が永久に埋まることがなくなる。
+  const margin = e.everOnscreen ? 0 : NEVER_ONSCREEN_MARGIN_PX;
+  if (
+    px < ONSCREEN_X_MIN_PX - margin ||
+    px > ONSCREEN_X_MAX_PX + margin ||
+    py < ONSCREEN_Y_MIN_PX - margin ||
+    py > ONSCREEN_Y_MAX_PX + margin
+  ) {
+    if (e.kind === KIND_REAPER) {
+      reaperTrackOnEscape(e.formationId);
     }
+    e.alive = false;
+    return;
   }
 
   // 発射しないkind(スキャッター/リーパー/ホイールソー)はここで打ち切り、atkTimerに一切触れない
