@@ -276,22 +276,24 @@ const SNAKE_AMPLITUDE = f(40); // 蛇行の振れ幅。anchorXから±40pxで大
 const SCATTER_SWEEP_VX = 112; // 広がった向きへの横断速度。ENEMY_VY(96)と同オーダー
 
 // --- ドリフター専用: 振り付け(docs/enemies.md「動きは振り付けで定義する」) ---
-// フェーズ列: 進入60f → 静止30f → 発射 → 静止30f → 離脱(逆側の斜め上へV字)。
-// 「編隊をひとかたまりで動かさない」ため、各機は自分の時計(e.localFrame)で同じ列を踏む。
-// 開始をDRIFTER_STAGGERずつ遅らせ、停止位置も進行方向に沿ってずらすので、
-// 結果として斜線に流れて見える(フォーメーションを作りにいくのではない)。
-const DRIFTER_ENTRY_FRAMES = 60; // 1.0秒。スポーン地点から停止位置まで
+// フェーズ列: 進入 → 静止30f → 発射 → 静止30f → 離脱(逆側の斜め上へV字)。
+//
+// **速度と進行方向は全機まったく同じ**にする。1本の道を種で1つ決め、全機が共有する。
+// 機ごとに違うのは「いつ出発するか(DRIFTER_STAGGER)」と「道のどこまで進んで止まるか
+// (進むフレーム数)」だけ。停止座標から速度を逆算してはいけない —— 停止位置が違えば速度も
+// 向きも機ごとに変わり、同じ地点から扇状にバラバラの速さで広がってしまう(実際にそれで却下された)。
+const DRIFTER_ENTRY_FRAMES = 60; // 先頭機が進むフレーム数(1.0秒)。後続はここからDRIFTER_TRAVEL_STEPずつ短い
+const DRIFTER_TRAVEL_STEP = 8; // 後続ほど手前で止まる。60/52/44/36... と同じ道の上に一列で並ぶ
+const DRIFTER_TRAVEL_MIN = 28; // 進むフレーム数の下限(画面に入りきらないほど手前で止めない)
 const DRIFTER_STILL1_FRAMES = 30; // 0.5秒。撃ち込みどころ兼、発射の予告
 const DRIFTER_STILL2_FRAMES = 30; // 0.5秒。発射後にもう一度止まる
 const DRIFTER_STAGGER = 11; // 1体ごとの開始遅れ(目安8〜14の中央)
-const DRIFTER_TARGET_Y = f(64); // 停止位置の基準y(画面中央あたり)
-const DRIFTER_TARGET_Y_STEP = f(14); // 後続ほど手前で止まる(進行方向に沿ったずらし)
-const DRIFTER_TARGET_X_STEP = f(10); // 停止位置を横にもずらし、斜線に並ばせる
-const DRIFTER_EXIT_VY = -96; // 離脱: 上へ(進入と逆向き)。大きさはENEMY_VYと同じ
+// 進入の速度。全機で共有する定数(逆算しない)。進入は「速く入って完全に止まる」拍なので、
+// 巡航の上限(スクロールの1/2=128)ではなくフェーズ列の時間(60f)に合わせた値を使う。
+const DRIFTER_ENTRY_VY = 341; // 8.8固定小数点。約1.33px/frame。60フレームで約80px入る
+const DRIFTER_ENTRY_VX = 160; // 斜めに入る横成分。左出現なら右向き、右出現なら左向き、正面は0
+const DRIFTER_EXIT_VY = -96; // 離脱: 上へ(進入と逆向き)
 const DRIFTER_EXIT_VX = 96; // 離脱: 進入した側とは逆の横方向へ
-// 発射・静止の各フェーズ境界(自分の時計での通過フレーム)
-const DRIFTER_FIRE_FRAME = DRIFTER_ENTRY_FRAMES + DRIFTER_STILL1_FRAMES;
-const DRIFTER_EXIT_FRAME = DRIFTER_FIRE_FRAME + DRIFTER_STILL2_FRAMES;
 const DRIFTER_TRANSITIONED_FLAG = 2; // e.flags bit1: 蛇行フェーズへ切替済み
 const DRIFTER_LEAVING_FLAG = 4; // e.flags bit2: 発射上限(1回)に到達し離脱シーケンスへ入った
 // 離脱(八の字): 蛇行の振動を止めず、振動中心(anchorX)だけを個体の離脱方向へ毎フレーム動かす。
@@ -662,20 +664,28 @@ function initScatter(e, wave, memberIndex, gate) {
 }
 
 function initDrifter(e, wave, memberIndex, gate) {
-  // 振り付け方式。全機が同じ場所から出て同じ道を通り、違うのは「開始時刻」と「停止位置」だけ。
+  // 全機が同じ地点から出て、同じ向き・同じ速さで同じ道を進む。
   const { edgeY } = edgeParamsForGate(gate);
   e.x = waveBaseX;
   e.y = edgeY;
+  // 進入速度は全機共通の定数。横成分だけ出現口で向きが決まる(ウェーブ内では全機同じ)。
+  e.vy = DRIFTER_ENTRY_VY;
+  if (gate === GATES.FRONT_LEFT) {
+    e.vx = DRIFTER_ENTRY_VX;
+  } else if (gate === GATES.FRONT_RIGHT) {
+    e.vx = -DRIFTER_ENTRY_VX;
+  } else {
+    e.vx = 0;
+  }
   // 自分の時計。負の間はまだ出発していない(スポーン地点は画面外なので重なっていても見えない)。
   e.localFrame = -memberIndex * DRIFTER_STAGGER;
-  // 停止位置: 後続ほど手前(y小)・横にずらす → 流れた結果として斜線に並ぶ。
-  e.anchorX = waveBaseX + (gate === GATES.FRONT_LEFT ? 1 : -1) * memberIndex * DRIFTER_TARGET_X_STEP;
-  e.anchorY = DRIFTER_TARGET_Y - memberIndex * DRIFTER_TARGET_Y_STEP;
-  // 進入は「60フレームちょうどで停止位置へ着く」等速。除算は初期化時の1回だけ(整数演算)。
-  e.vx = ((e.anchorX - e.x) / DRIFTER_ENTRY_FRAMES) | 0;
-  e.vy = ((e.anchorY - e.y) / DRIFTER_ENTRY_FRAMES) | 0;
-  // 離脱は進入した側と逆の斜め上へ。左右の出現口は「逆側」で決まる。
-  // 正面出現はどちらへ抜けても逆側にならないので、ここだけ個体ごとにLFSRで散らす
+  // 停止位置は座標ではなく「進むフレーム数」で持つ。後続ほど手前で止まり、同じ道の上に一列に並ぶ。
+  let travel = DRIFTER_ENTRY_FRAMES - memberIndex * DRIFTER_TRAVEL_STEP;
+  if (travel < DRIFTER_TRAVEL_MIN) {
+    travel = DRIFTER_TRAVEL_MIN;
+  }
+  e.travelFrames = travel;
+  // 離脱の左右。左右の出現口は「逆側」で決まり、正面だけ個体ごとにLFSRで散らす
   // (docs/enemies.md「乱数で揺らすのは出現位置と離脱の左右だけ」)。
   if (gate === GATES.FRONT_LEFT) {
     e.flags = LEAVE_SIDE_RIGHT_FLAG;
@@ -909,35 +919,33 @@ function moveScatter(e) {
 }
 
 function moveDrifter(e) {
-  // 振り付け(docs/enemies.md)。自分の時計だけを見て、時間で区切られたフェーズ列を踏む。
-  // 進入60f → 静止30f → 発射 → 静止30f → 離脱(逆側の斜め上へV字)。
-  // 縦方向も含めてこの関数で位置を決めるため、共通のvy積分には任せない
-  // (updateOneEnemyがvyを積むので、静止フェーズではvx/vyを0にして「完全に止める」)。
+  // 振り付け。自分の時計だけを見て、時間で区切られたフェーズ列を踏む。
+  // 進入(travelFrames) → 静止30f → 発射 → 静止30f → 離脱。
+  // yは共通パイプラインがvyを積むので、ここではxを積み、フェーズ境界でvx/vyを切り替える。
   e.localFrame += 1;
   const t = e.localFrame;
   if (t <= 0) {
-    // まだ出発していない。スポーン地点で待つ(画面外なので見えない)。
+    // まだ出発していない。共通パイプラインはvyを毎フレーム積むので、ここで0にしておかないと
+    // 待っている間に降りてしまい、後続ほど深い位置から進入することになる(実際に踏んだ)。
+    e.vy = 0;
+    return;
+  }
+  if (t === 1) {
+    e.vy = DRIFTER_ENTRY_VY; // 出発。速度は全機共通の定数
+  }
+  const travel = e.travelFrames;
+  if (t <= travel) {
+    e.x += e.vx; // 進入中。速度は全機共通のまま変えない
+    return;
+  }
+  if (t === travel + 1) {
+    // 静止は「遅くする」ではなく完全に止める。
     e.vx = 0;
     e.vy = 0;
     return;
   }
-  if (t <= DRIFTER_ENTRY_FRAMES) {
-    // 進入中。yは共通パイプラインがvyを積むので、ここではxだけ動かす。
-    e.x += e.vx;
-    return;
-  }
-  if (t === DRIFTER_ENTRY_FRAMES + 1) {
-    // 停止位置へ吸着させてから止まる(除算の丸め誤差を残さない)。静止は「遅くする」ではなく「止める」。
-    e.x = e.anchorX;
-    e.y = e.anchorY;
-    e.vx = 0;
-    e.vy = 0;
-    return;
-  }
-  if (t < DRIFTER_FIRE_FRAME) {
-    return; // 静止1(予備動作)。vx=vy=0のまま完全に止まっている
-  }
-  if (t === DRIFTER_FIRE_FRAME) {
+  const fireAt = travel + DRIFTER_STILL1_FRAMES;
+  if (t === fireAt) {
     // 発射は1撃。近距離では撃たない規則は維持する(撃たない場合も振り付けは止めない)。
     if (!isPlayerTooCloseToFire(e)) {
       fireEnemyBullet(e);
@@ -945,17 +953,17 @@ function moveDrifter(e) {
     }
     return;
   }
-  if (t < DRIFTER_EXIT_FRAME) {
-    return; // 静止2
-  }
-  if (t === DRIFTER_EXIT_FRAME) {
+  const exitAt = fireAt + DRIFTER_STILL2_FRAMES;
+  if (t === exitAt) {
     // 離脱: 進入した側とは逆の斜め上へ。降りてきた軌跡と合わせてV字になる。
     e.vy = DRIFTER_EXIT_VY;
     e.vx = e.flags & LEAVE_SIDE_RIGHT_FLAG ? DRIFTER_EXIT_VX : -DRIFTER_EXIT_VX;
     triggerLeave(e);
     return;
   }
-  e.x += e.vx; // 離脱中
+  if (t > exitAt) {
+    e.x += e.vx; // 離脱中
+  }
 }
 
 function moveReaper(e) {
