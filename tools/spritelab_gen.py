@@ -241,7 +241,9 @@ def downscale_for_tile(image, target):
     """
     from PIL import Image
 
-    return image.resize((target, target), Image.BOX)
+    # target は正方形なら int、非正方形(ハーベスタ 64x32)なら (w, h) のタプルを受ける。
+    size = target if isinstance(target, tuple) else (target, target)
+    return image.resize(size, Image.BOX)
 
 
 def flood_fill_background(indices, width, height, bg_index):
@@ -403,6 +405,25 @@ SPRITE_CONVERT_SPECS = [
     ("obstacle_rock", "obstacle_rock", "TILE_OBSTACLE_ROCK", 16, 3),
     ("obstacle_fence", "obstacle_fence", "TILE_OBSTACLE_FENCE", 16, 3),
     ("obstacle_cactus", "obstacle_cactus", "TILE_OBSTACLE_CACTUS", 16, 3),
+    # docs/enemies.md v2 の敵16種。敵は「当たると死ぬ側」なので最暗色 index3 を許容する
+    # (濃度4を持つ = 当たると死ぬ、という読み替えの約束)。
+    ("enemy_scatter", "enemy_scatter", "TILE_ENEMY_SCATTER", 16, 3),
+    ("enemy_drifter", "enemy_drifter", "TILE_ENEMY_DRIFTER", 16, 3),
+    ("enemy_reaper", "enemy_reaper", "TILE_ENEMY_REAPER", 16, 3),
+    ("enemy_hopper", "enemy_hopper", "TILE_ENEMY_HOPPER", 16, 3),
+    ("enemy_gunwagon", "enemy_gunwagon", "TILE_ENEMY_GUNWAGON", 16, 3),
+    ("enemy_sandworm", "enemy_sandworm", "TILE_ENEMY_SANDWORM", 16, 3),
+    ("enemy_sidecar", "enemy_sidecar", "TILE_ENEMY_SIDECAR", 16, 3),
+    ("enemy_mirage", "enemy_mirage", "TILE_ENEMY_MIRAGE", 16, 3),
+    ("enemy_chaser", "enemy_chaser", "TILE_ENEMY_CHASER", 16, 3),
+    ("enemy_runner", "enemy_runner", "TILE_ENEMY_RUNNER", 16, 3),
+    ("enemy_bomber", "enemy_bomber", "TILE_ENEMY_BOMBER", 16, 3),
+    ("enemy_monolith", "enemy_monolith", "TILE_ENEMY_MONOLITH", 16, 3),
+    ("enemy_wheelsaw", "enemy_wheelsaw", "TILE_ENEMY_WHEELSAW", 16, 3),
+    ("enemy_mother", "enemy_mother", "TILE_ENEMY_MOTHER", 16, 3),
+    ("enemy_lance", "enemy_lance", "TILE_ENEMY_LANCE", 16, 3),
+    # ハーベスタのみ大型。16x16タイル8枚分(横4×縦2)に相当する 64x32 で出す。
+    ("enemy_harvester", "enemy_harvester", "TILE_ENEMY_HARVESTER", (64, 32), 3),
 ]
 
 
