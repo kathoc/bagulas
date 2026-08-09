@@ -9,6 +9,11 @@ export const FORMATIONS = Object.freeze({
   REAPER: 'REAPER',
   GUNWAGON: 'GUNWAGON',
   WHEELSAW: 'WHEELSAW',
+  // 段階3グループ2(docs/enemies.md #4,#6,#7,#14)
+  HOPPER: 'HOPPER',
+  SANDWORM: 'SANDWORM',
+  SIDECAR: 'SIDECAR',
+  MOTHER: 'MOTHER',
 });
 
 // 障害物種別と破壊可否テーブル
@@ -29,6 +34,10 @@ export const GATES = Object.freeze({
   BACK_LEFT: 3,
   BACK_RIGHT: 4,
   BACK_AUTO: 5,
+  // サンドワーム専用: 「出現口の概念を持たない」(docs/enemies.md #6)ためのプレースホルダ。
+  // waveの並び/空き時間の仕組みはそのまま使いたいので値としては用意するが、
+  // enemies.jsのinitSandwormはこの値からx/yを一切導出しない(自機位置基準で独自に決める)。
+  UNDERGROUND: 6,
 });
 
 // 敵種別ごとに使える出現口(データとして保持)。「正面のみ」等の性質をここで表現する。
@@ -40,6 +49,11 @@ export const FORMATION_GATES = Object.freeze({
   [FORMATIONS.REAPER]: [GATES.FRONT_LEFT, GATES.FRONT_RIGHT],
   [FORMATIONS.GUNWAGON]: [GATES.FRONT_CENTER],
   [FORMATIONS.WHEELSAW]: [GATES.FRONT_LEFT, GATES.FRONT_RIGHT],
+  // 段階3グループ2(docs/enemies.md 一覧表の出現口列に対応)
+  [FORMATIONS.HOPPER]: [GATES.FRONT_LEFT, GATES.FRONT_RIGHT, GATES.FRONT_CENTER],
+  [FORMATIONS.SANDWORM]: [GATES.UNDERGROUND],
+  [FORMATIONS.SIDECAR]: [GATES.FRONT_LEFT, GATES.FRONT_RIGHT],
+  [FORMATIONS.MOTHER]: [GATES.FRONT_CENTER],
 });
 
 // 周回ごとの整数倍率適用ヘルパ。
@@ -130,6 +144,56 @@ function emptySection(type, bossId) {
   return section;
 }
 
+// ステージ2: ジャングル ------------------------------------------------
+// 段階3グループ2(ホッパー/サンドワーム/サイドカー/マザー)の検証用に定義する。
+// docs/enemies.md「ステージ別の配分」: 主力ホッパー/マザー、混ぜるサンドワーム/サイドカー。
+// 障害物(倒木・巨大植物・沼)は本タスクの対象外のため obstacles は空のままにする。
+// game.js の isStagePlayable() は現状 stageIndex===0 のみを実プレイ対象にしているため、
+// このセクションは通常のステージ進行では到達しない(M1のスコープ外)。
+// 検証は enemies.js の startAtWave(sectionIdx, waveIdx, stageIdx) 経由(game.startPlayAtの第4引数)で行う。
+const STAGE2_PRELUDE_LENGTH = 800;
+const STAGE2_MAIN_LENGTH = 1400;
+
+const stage2Prelude = {
+  type: 'prelude',
+  length: STAGE2_PRELUDE_LENGTH,
+  waves: [
+    { formation: FORMATIONS.HOPPER, count: 3, hp: 3, gate: GATES.FRONT_LEFT },
+    { formation: FORMATIONS.HOPPER, count: 3, hp: 3, gate: GATES.FRONT_RIGHT },
+    { formation: FORMATIONS.HOPPER, count: 3, hp: 3, gate: GATES.FRONT_CENTER },
+    { formation: FORMATIONS.SIDECAR, count: 4, hp: 2, gate: GATES.FRONT_LEFT },
+    { formation: FORMATIONS.SIDECAR, count: 4, hp: 2, gate: GATES.FRONT_RIGHT },
+    { formation: FORMATIONS.SANDWORM, count: 3, hp: 3, gate: GATES.UNDERGROUND },
+  ],
+  obstacles: [],
+};
+
+const stage2Main = {
+  type: 'main',
+  length: STAGE2_MAIN_LENGTH,
+  waves: [
+    { formation: FORMATIONS.HOPPER, count: 3, hp: 4, gate: GATES.FRONT_LEFT },
+    { formation: FORMATIONS.SANDWORM, count: 3, hp: 4, gate: GATES.UNDERGROUND },
+    { formation: FORMATIONS.SIDECAR, count: 4, hp: 3, gate: GATES.FRONT_RIGHT },
+    { formation: FORMATIONS.HOPPER, count: 3, hp: 4, gate: GATES.FRONT_CENTER },
+    // マザー出現中は射出したスキャッターがENEMIESプール(20)を食うため、編隊数を3のまま
+    // 単独ウェーブとして挟み、前後のウェーブと重ならせない(gateはFRONT_CENTER固定=正面のみ)。
+    { formation: FORMATIONS.MOTHER, count: 3, hp: 5, gate: GATES.FRONT_CENTER },
+    { formation: FORMATIONS.SIDECAR, count: 4, hp: 3, gate: GATES.FRONT_LEFT },
+    { formation: FORMATIONS.SANDWORM, count: 3, hp: 4, gate: GATES.UNDERGROUND },
+    { formation: FORMATIONS.MOTHER, count: 3, hp: 5, gate: GATES.FRONT_CENTER },
+  ],
+  obstacles: [],
+};
+
+const stage2Boss = {
+  type: 'boss',
+  length: 0,
+  waves: [],
+  obstacles: [],
+  bossId: 2,
+};
+
 // ステージ5: 海の上 — ボスラッシュ
 // ステージ1〜4のボス（強化再戦）→ 新ボス5体目
 const stage5BossRush = [
@@ -151,7 +215,7 @@ export const STAGES = [
     id: 2,
     name: 'JUNGLE',
     tileset: 'jungle',
-    sections: [],
+    sections: [stage2Prelude, stage2Main, stage2Boss],
   },
   {
     id: 3,

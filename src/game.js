@@ -36,6 +36,7 @@ import {
   setLoop,
   getSectionIndex,
   startAtWave,
+  isEnemyIntangible,
 } from './enemies.js';
 import { STAGES } from './stages.js';
 import {
@@ -195,9 +196,12 @@ export function initGame() {
 // initGame() の直後に呼ぶ。invulnFrames を大きく取ると被弾で止まらずに
 // 後半のウェーブまで到達できるので、自動プレイでの実測に使える。
 // URLの解釈はここではしない(src/debug.js が持つ)。
-export function startPlayAt(sectionIdx, waveIdx, invulnFrames) {
+// stageIdx(第4引数、省略可): 段階3グループ2(ホッパー/サンドワーム/サイドカー/マザー)を
+// STAGES[1](ジャングル)から検証するための追加パラメータ。省略時は0(荒野)のままなので、
+// 既存の3引数呼び出し(ステージ1の検証)は一切挙動が変わらない。
+export function startPlayAt(sectionIdx, waveIdx, invulnFrames, stageIdx) {
   gameState = STATE.PLAY;
-  startAtWave(sectionIdx, waveIdx);
+  startAtWave(sectionIdx, waveIdx, stageIdx || 0);
   if (invulnFrames > 0) {
     playerInvuln = invulnFrames;
   }
@@ -372,6 +376,11 @@ function checkOneEnemyAgainstCurBullet(e, idx) {
   if (!curBullet.alive || !e.alive) {
     return;
   }
+  // サンドワーム潜行中は判定なし(docs/enemies.md #6)。ここで弾ごとhitOverlap自体を止めないと、
+  // damageEnemy側の無敵ガードだけでは「非貫通弾が見えない敵に当たって消える」不可解な現象が残る。
+  if (isEnemyIntangible(e)) {
+    return;
+  }
   const pierce = (curBullet.flags & FLAG_PIERCE) !== 0;
   // 鉄球(貫通)は直前に当てた同一敵への連続ヒットのみクールダウンで防ぐ。別の敵には即ヒットできる。
   if (pierce && curBullet.lastHitEnemy === idx && curBullet.hitCooldown > 0) {
@@ -490,6 +499,10 @@ function collideExplosionsVsTargets() {
 // (障害物×自機は別扱い。checkObstacleVsPlayer参照 — ミスにはせず拘束(スタン)を与えるだけ)
 function checkEnemyVsPlayer(e) {
   if (playerInvuln > 0 || !e.alive) {
+    return;
+  }
+  // サンドワーム潜行中は判定なし(docs/enemies.md #6)。
+  if (isEnemyIntangible(e)) {
     return;
   }
   const eb = enemyHitboxForTile(e.tile);

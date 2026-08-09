@@ -22,6 +22,10 @@ import { TILE_ENEMY_DRIFTER } from '../art/generated/enemy_drifter.js';
 import { TILE_ENEMY_REAPER } from '../art/generated/enemy_reaper.js';
 import { TILE_ENEMY_GUNWAGON } from '../art/generated/enemy_gunwagon.js';
 import { TILE_ENEMY_WHEELSAW } from '../art/generated/enemy_wheelsaw.js';
+import { TILE_ENEMY_HOPPER } from '../art/generated/enemy_hopper.js';
+import { TILE_ENEMY_SANDWORM } from '../art/generated/enemy_sandworm.js';
+import { TILE_ENEMY_SIDECAR } from '../art/generated/enemy_sidecar.js';
+import { TILE_ENEMY_MOTHER } from '../art/generated/enemy_mother.js';
 
 function emptyTile(fill) {
   const t = new Uint8Array(64);
@@ -348,6 +352,26 @@ function buildEnemyWheelsaw() {
   return quadFrom16(TILE_ENEMY_WHEELSAW);
 }
 
+// 敵: ホッパー（実素材: enemy_hopper.png。段階3グループ2で追加）
+function buildEnemyHopper() {
+  return quadFrom16(TILE_ENEMY_HOPPER);
+}
+
+// 敵: サンドワーム（実素材: enemy_sandworm.png。段階3グループ2で追加）
+function buildEnemySandworm() {
+  return quadFrom16(TILE_ENEMY_SANDWORM);
+}
+
+// 敵: サイドカー（実素材: enemy_sidecar.png。段階3グループ2で追加）
+function buildEnemySidecar() {
+  return quadFrom16(TILE_ENEMY_SIDECAR);
+}
+
+// 敵: マザー（実素材: enemy_mother.png。段階3グループ2で追加）
+function buildEnemyMother() {
+  return quadFrom16(TILE_ENEMY_MOTHER);
+}
+
 export function buildTiles() {
   const tiles = [];
   tiles.push(tileEmpty()); // 0
@@ -386,6 +410,11 @@ export function buildTiles() {
     ['TILE16_ENEMY_REAPER', buildEnemyReaper()],
     ['TILE16_ENEMY_GUNWAGON', buildEnemyGunwagon()],
     ['TILE16_ENEMY_WHEELSAW', buildEnemyWheelsaw()],
+    // 段階3グループ2: 敵4種（ホッパー/サンドワーム/サイドカー/マザー）
+    ['TILE16_ENEMY_HOPPER', buildEnemyHopper()],
+    ['TILE16_ENEMY_SANDWORM', buildEnemySandworm()],
+    ['TILE16_ENEMY_SIDECAR', buildEnemySidecar()],
+    ['TILE16_ENEMY_MOTHER', buildEnemyMother()],
   ];
   const meta16Ids = {};
   for (const [name, quad] of META16_DEFS) {
@@ -419,6 +448,10 @@ const META16_ORDER = [
   'TILE16_ENEMY_REAPER',
   'TILE16_ENEMY_GUNWAGON',
   'TILE16_ENEMY_WHEELSAW',
+  'TILE16_ENEMY_HOPPER',
+  'TILE16_ENEMY_SANDWORM',
+  'TILE16_ENEMY_SIDECAR',
+  'TILE16_ENEMY_MOTHER',
 ];
 const NUM_FIXED_TILES = 12; // 道路系7枚(0-6) + 煙(7) + 自弾3種(8-10) + 敵弾(11)
 const META16_BASE = NUM_FIXED_TILES; // 固定タイル12枚の後ろ（フォントはタイルアトラスに含まれない）
@@ -445,3 +478,7 @@ export const TILE16_ENEMY_DRIFTER = META16_BASE + META16_ORDER.indexOf('TILE16_E
 export const TILE16_ENEMY_REAPER = META16_BASE + META16_ORDER.indexOf('TILE16_ENEMY_REAPER') * 4;
 export const TILE16_ENEMY_GUNWAGON = META16_BASE + META16_ORDER.indexOf('TILE16_ENEMY_GUNWAGON') * 4;
 export const TILE16_ENEMY_WHEELSAW = META16_BASE + META16_ORDER.indexOf('TILE16_ENEMY_WHEELSAW') * 4;
+export const TILE16_ENEMY_HOPPER = META16_BASE + META16_ORDER.indexOf('TILE16_ENEMY_HOPPER') * 4;
+export const TILE16_ENEMY_SANDWORM = META16_BASE + META16_ORDER.indexOf('TILE16_ENEMY_SANDWORM') * 4;
+export const TILE16_ENEMY_SIDECAR = META16_BASE + META16_ORDER.indexOf('TILE16_ENEMY_SIDECAR') * 4;
+export const TILE16_ENEMY_MOTHER = META16_BASE + META16_ORDER.indexOf('TILE16_ENEMY_MOTHER') * 4;

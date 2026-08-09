@@ -9,6 +9,7 @@ import {
   OBSTACLES,
   EFFECTS,
   SCORE_POPS,
+  SMOKE,
   spawn,
   forEach,
   forEachFrom,
@@ -34,7 +35,12 @@ import {
   TILE16_ENEMY_REAPER,
   TILE16_ENEMY_GUNWAGON,
   TILE16_ENEMY_WHEELSAW,
+  TILE16_ENEMY_HOPPER,
+  TILE16_ENEMY_SANDWORM,
+  TILE16_ENEMY_SIDECAR,
+  TILE16_ENEMY_MOTHER,
   TILE_BULLET_ENEMY,
+  TILE_SMOKE,
 } from './tiles.js';
 import { STAGES, FORMATIONS, OBSTACLE_KINDS, GATES, applyLoop } from './stages.js';
 
@@ -46,6 +52,11 @@ const KIND_DRIFTER = 1;
 const KIND_REAPER = 2;
 const KIND_GUNWAGON = 3;
 const KIND_WHEELSAW = 4;
+// 段階3グループ2(docs/enemies.md #4,#6,#7,#14)
+const KIND_HOPPER = 5;
+const KIND_SANDWORM = 6;
+const KIND_SIDECAR = 7;
+const KIND_MOTHER = 8;
 
 // formation名(stages.js) → kind番号。wave.formationの値からここで解決する。
 const KIND_BY_FORMATION = {
@@ -54,6 +65,10 @@ const KIND_BY_FORMATION = {
   [FORMATIONS.REAPER]: KIND_REAPER,
   [FORMATIONS.GUNWAGON]: KIND_GUNWAGON,
   [FORMATIONS.WHEELSAW]: KIND_WHEELSAW,
+  [FORMATIONS.HOPPER]: KIND_HOPPER,
+  [FORMATIONS.SANDWORM]: KIND_SANDWORM,
+  [FORMATIONS.SIDECAR]: KIND_SIDECAR,
+  [FORMATIONS.MOTHER]: KIND_MOTHER,
 };
 
 // kindごとの静的データ(タイル)。耐久/出現口/編成数はwave側(stages.js)が持つためここには置かない。
@@ -63,19 +78,29 @@ const ENEMY_DEF_BY_KIND = [
   { tile: TILE16_ENEMY_REAPER },
   { tile: TILE16_ENEMY_GUNWAGON },
   { tile: TILE16_ENEMY_WHEELSAW },
+  { tile: TILE16_ENEMY_HOPPER },
+  { tile: TILE16_ENEMY_SANDWORM },
+  { tile: TILE16_ENEMY_SIDECAR },
+  { tile: TILE16_ENEMY_MOTHER },
 ];
 
 // 発射するkindかどうか。false のkindはatkTimerの減算/発射パイプラインへ一切触れない
 // (スキャッター/リーパー/ホイールソーは攻撃なし。無限に減算させて誤発火しないようここで断つ)。
-const ENEMY_CAN_FIRE_BY_KIND = [false, true, false, true, false];
+// ホッパー/サンドワームもfalse: どちらも共通の「減速→フラッシュ→発射」atkTimerパイプラインに
+// 乗らない専用の予備動作(着地の停止/砂煙の盛り上がり)を持つため、moveHopper/updateSandwormPre側で
+// 独自にfireCountを管理する(下記コメント参照)。
+const ENEMY_CAN_FIRE_BY_KIND = [false, true, false, true, false, false, false, true, true];
 
 // 雑魚敵は一撃離脱(docs/enemies.md)。「離脱までに撃てる回数」をkind別に持つ。
 // GATE_X_MIN/GATE_X_SPREADと同じ「基準値+rndRangeでの上乗せ」の形にして、後で残り11種
 // (ハーベスタ/マザーの複数回射出など)を足すときも同じ形で拡張できるようにする。
 // 発射しないkind(SCATTER/REAPER/WHEELSAW)は値を持っていても実害がない
 // (ENEMY_CAN_FIRE_BY_KINDがfalseなので、この配列自体が参照されない)。
-const ENEMY_FIRE_LIMIT_MIN_BY_KIND = [0, 1, 0, 2, 0]; // DRIFTER=1回, GUNWAGON=2回起点
-const ENEMY_FIRE_LIMIT_SPREAD_BY_KIND = [1, 1, 1, 2, 1]; // GUNWAGONのみ+0..1で2〜3回に散らす
+// ホッパー/サンドワームはこの配列を参照しない(ENEMY_CAN_FIRE_BY_KINDがfalseのため
+// initEnemyFromWaveがfireLimit=0で決め打ちする)。実際の発射回数上限はHOPPER_FIRE_LIMIT/
+// 専用の1回きり処理でkind固有に管理する(下記)。
+const ENEMY_FIRE_LIMIT_MIN_BY_KIND = [0, 1, 0, 2, 0, 0, 0, 1, 3]; // SIDECAR=1回, MOTHER=3回起点
+const ENEMY_FIRE_LIMIT_SPREAD_BY_KIND = [1, 1, 1, 2, 1, 1, 1, 1, 2]; // MOTHERは+0..1で3〜4回に散らす
 
 // 発射上限に達した個体が離脱する時にkind固有の後始末(移動状態の切替)を行う関数テーブル。
 // 何もしないkindはleaveNoneを使う(ENEMY_MOVE_BY_KINDと同じ並び順: SCATTER/DRIFTER/REAPER/GUNWAGON/WHEELSAW)。
@@ -132,13 +157,55 @@ const WHEELSAW_VX = 96; // 跳ね返りの横速度。ENEMY_VYと同オーダー
 const WHEELSAW_MIN_X = f(0);
 const WHEELSAW_MAX_X = f(144); // 画面幅160-スプライト幅16(スプライト半分を考慮したclamp範囲)
 
+// --- ホッパー専用: 跳ねながら降下。着地の瞬間だけ停止し、その硬直中に真下へ1発(docs/enemies.md #4) ---
+const HOPPER_AIR_FRAMES = 36; // 1跳躍の滞空フレーム数。ENEMY_VY(96)×36/256≈13.5px/跳躍で降下する
+const HOPPER_LAND_FRAMES = 30; // 着地硬直の長さ。docs「障害物拘束30フレーム=0.5秒」と同じ長さを
+// 「狙って撃てる」基準として採用する(実測はverify手順で確認・報告する)。
+const HOPPER_LANDED_FLAG = 1; // e.flags bit0: 着地硬直中
+const HOPPER_FIRE_LIMIT = 1; // 一撃離脱: 最初の着地硬直で1回だけ真下へ撃つ
+const HOPPER_BULLET_DOWN_DIR = 8; // DIR16[8] = 真下固定(自機を狙わない。docs「真下へ1発」)
+
+// --- サンドワーム専用: 潜行(無敵・判定なし)→予告(砂煙)→浮上して放射3発(docs/enemies.md #6) ---
+// 出現口の概念を持たないため、スポーン直後は不可視状態でENEMIESプールへ入れる(無敵・判定なしは
+// damageEnemy/checkOneEnemyAgainstCurBullet/checkEnemyVsPlayer側のisEnemyIntangible判定で実現する)。
+const SANDWORM_SUBMERGED_FLAG = 1; // e.flags bit0: 潜行中(不可視・無敵・判定なし)
+const SANDWORM_STAGGER_FRAMES = 30; // 編隊内メンバーごとに出現をずらす(3体同時浮上を避ける)
+const SANDWORM_HOMING_FRAMES = 40; // 潜行接近フェーズの長さ(不可視のまま自機xへ寄る)
+const SANDWORM_TELEGRAPH_FRAMES = 50; // 予告(砂煙)フェーズの長さ。浮上までの猶予として実測・報告する
+const SANDWORM_SMOKE_INTERVAL = 10; // 砂煙を吹くフレーム間隔(予告フェーズ中に5回盛り上がる)
+const SANDWORM_HOMING_VX = f(1); // 潜行接近の横移動速度(1px/frame)
+const SANDWORM_HOME_Y = f(96); // 潜行/浮上のy(自機の可動域Y_MIN64..Y_MAX128に近い帯)
+const SANDWORM_ENTRY_SPACING = f(20); // 編隊内メンバーの初期x間隔(重なり回避)
+
+// --- サイドカー専用: 左右に大きく往復しながらゆっくり降下。移動先を狙う山なりの投擲(docs/enemies.md #7) ---
+const SIDECAR_VY = 72; // ENEMY_VY(96)よりゆっくり降下させる(docs「ゆっくり降下」)
+const SIDECAR_AMPLITUDE = f(36); // 往復の振れ幅(ドリフターの蛇行より大きく=「大きく往復」)
+const SIDECAR_STEP = 96; // 往復速度
+const SIDECAR_LEAVING_FLAG = 2; // e.flags bit1: 発射済みで離脱シーケンスへ入った(bit0は往復方向で使用中)
+const SIDECAR_LEAD_FRAMES = 30; // 自機の「移動先」を先読みする時間(フレーム)
+const SIDECAR_BULLET_SPEED = 2; // 通常の敵弾と同オーダー
+const SIDECAR_LOB_ARC_BOOST = f(1); // 直線照準よりさらに上向きに初速を足し、重力で弧を描かせる
+const SIDECAR_LOB_GRAVITY = 10; // 8.8固定小数点。毎フレームvyへ加算(weapons.jsのDYNAMITE_GRAVITY=16と同系統)
+const ENEMY_BULLET_KIND_LOB = 1; // ENEMY_BULLETS.kindの特殊値: 山なり(重力あり)。通常弾は0のまま
+
+// --- マザー専用: ゆっくり降下しながら左右へ。ハッチからスキャッターを連続射出(docs/enemies.md #14) ---
+const MOTHER_TARGET_Y = f(24); // 居座り開始y(ガンワゴンと同じ帯)
+const MOTHER_DRIFT_VY = 24; // 居座り後もゆっくり降下し続ける速度(docs「ゆっくり降下しながら左右へ」)
+const MOTHER_SWAY_AMPLITUDE = f(28); // 左右の揺れ幅(ガンワゴンの端から端スライドより控えめ)
+const MOTHER_SWAY_STEP = 64; // 揺れの速さ
+const MOTHER_SETTLED_FLAG = 2; // e.flags bit1: 居座り位置へ到達済み(bit0は揺れ方向で使用中)
+const MOTHER_LEAVING_FLAG = 4; // e.flags bit2: 射出上限に到達し離脱シーケンスへ入った
+const MOTHER_CHILD_HP = 1; // 射出されたスキャッターの耐久。プール占有時間を短く保つためあえて低くする
+
 // 出現口(GATES.*)ごとの編隊アンカーx範囲(px)。index は GATES の値と対応する
-// (FRONT_LEFT, FRONT_RIGHT, FRONT_CENTER, BACK_LEFT, BACK_RIGHT)。BACK_AUTOは解決後の値でしか引かない。
-const GATE_X_MIN = [8, 96, 64, 8, 96];
-const GATE_X_SPREAD = [49, 49, 33, 49, 49]; // rndRangeに渡す範囲
+// (FRONT_LEFT, FRONT_RIGHT, FRONT_CENTER, BACK_LEFT, BACK_RIGHT, BACK_AUTO, UNDERGROUND)。
+// BACK_AUTOは解決後の値でしか引かない。UNDERGROUND(サンドワーム)はinitSandwormが参照しない
+// (自機位置基準で独自にx/yを決めるため)が、配列の対応関係を崩さないよう値だけは埋めておく。
+const GATE_X_MIN = [8, 96, 64, 8, 96, 64, 64];
+const GATE_X_SPREAD = [49, 49, 33, 49, 49, 33, 33]; // rndRangeに渡す範囲
 
 // 出現口が背後(下端から追い上げ)かどうか。1=背後。indexはGATES.*と対応
-const GATE_IS_BACK = [0, 0, 0, 1, 1];
+const GATE_IS_BACK = [0, 0, 0, 1, 1, 0, 0];
 
 const WAVE_GAP_MIN = 90; // ウェーブ間の空き下限(フレーム)
 const WAVE_GAP_SPREAD = 61; // rndRange(61)で0..60を足し、90..150の空きにする
@@ -265,9 +332,22 @@ export function setLoop(n) {
   loop = n;
 }
 
+// 現在対象にしているステージ(STAGES配列のindex)。既定0=STAGES[0](荒野、M1で実プレイ可能な唯一のステージ)。
+// 段階3グループ2の検証用にstartAtWave()の第3引数で切り替えられるようにする(通常プレイ経路は
+// 常に0のまま触れないので、ステージ1の道中には一切影響しない)。
+let curStageIndex = 0;
+
 // updateEnemies()の引数を、毎フレームクロージャを作らずforEachコールバックへ渡すためのモジュール変数
 let curPlayerX = 0;
 let curPlayerY = 0;
+// サイドカーの「移動先を狙う」先読みに使う自機の推定速度(8.8固定小数点、1フレームあたりの変位)。
+// game.jsからは位置しか渡されないため、前フレームとの差分でここに毎フレーム算出する
+// (三角関数は使わず、aim16へ渡す差分ベクトルの一部として使うだけ)。
+let prevPlayerX = 0;
+let prevPlayerY = 0;
+let playerVelocityPrimed = false; // リセット直後の1フレーム目は差分を取らず0にする(急変を防ぐ)
+let curPlayerVX = 0;
+let curPlayerVY = 0;
 let curScrollY = 0; // updateOneEnemy()のオフロード判定用（updateEnemiesが毎フレーム更新する）
 let curDistance = 0; // drawOneEnemy()の揺れ演出の周期用（updateEnemiesが毎フレーム更新する）
 // 自機死亡演出〜復活の間、世界全体が一緒にスローになって見えるための速度比。
@@ -294,6 +374,10 @@ export function resetEnemies() {
   currentGate = GATES.FRONT_CENTER;
   currentFormationId = 0;
   nextFormationId = 1;
+  curStageIndex = 0; // 通常の新規ゲームは常にステージ0(荒野)から。デバッグ用startAtWaveの3引数目でのみ変わる
+  playerVelocityPrimed = false;
+  curPlayerVX = 0;
+  curPlayerVY = 0;
 
   forEach(ENEMIES, killSlot);
   forEach(ENEMY_BULLETS, killSlot);
@@ -307,7 +391,7 @@ function advanceSection(distance) {
   if (sectionIndex >= 2) {
     return; // ボスセクション到達済み。以降スポーンしない
   }
-  const sections = STAGES[0].sections;
+  const sections = STAGES[curStageIndex].sections;
   let localDistance = distance - sectionStartDistance;
   while (sectionIndex < 2 && localDistance >= sections[sectionIndex].length) {
     sectionStartDistance += sections[sectionIndex].length;
@@ -419,8 +503,60 @@ function initWheelsaw(e, wave, memberIndex, gate) {
   e.vy = ENEMY_VY;
 }
 
+function initHopper(e, wave, memberIndex, gate) {
+  // 前左/前右/正面(docs/enemies.md #4)。V字と同じ横広がりで重なりを避けつつ縦列で入場する。
+  // 着地/滞空の状態機械はmoveHopperが毎フレーム管理する(flags=0からairborneで開始)。
+  const { vySign, edgeY, edgeStep } = edgeParamsForGate(gate);
+  e.x = waveBaseX + vOffsetX(memberIndex);
+  e.y = edgeY + edgeStep * memberIndex * COLUMN_Y_SPACING;
+  e.vx = 0;
+  e.vy = vySign * ENEMY_VY;
+}
+
+function initSandworm(e, wave, memberIndex, gate) {
+  // 出現口を持たない(docs/enemies.md #6)。潜行状態(不可視・無敵・判定なし)でスポーンし、
+  // 自機x付近を初期位置にする(以後updateSandwormPreが自機xへ寄せながら浮上位置を決める)。
+  // SANDWORM_STAGGER_FRAMESでメンバーごとにtimerを負値にずらし、3体が同時に浮上しないようにする。
+  e.x = curPlayerX + (memberIndex - 1) * SANDWORM_ENTRY_SPACING;
+  e.y = SANDWORM_HOME_Y;
+  e.vx = 0;
+  e.vy = 0;
+  e.flags |= SANDWORM_SUBMERGED_FLAG;
+  e.timer = -(memberIndex * SANDWORM_STAGGER_FRAMES);
+}
+
+function initSidecar(e, wave, memberIndex, gate) {
+  // 前左/前右のみ(docs/enemies.md #7)。縦列で入場し、moveSidecarが即座に左右往復を始める。
+  const { vySign, edgeY, edgeStep } = edgeParamsForGate(gate);
+  e.x = waveBaseX;
+  e.y = edgeY + edgeStep * memberIndex * COLUMN_Y_SPACING;
+  e.anchorX = waveBaseX;
+  e.vx = 0;
+  e.vy = vySign * SIDECAR_VY;
+}
+
+function initMother(e, wave, memberIndex, gate) {
+  // 正面のみ(docs/enemies.md #14)。前方の縁から入り、MOTHER_TARGET_Yで居座りに移る
+  // (moveMother参照)。降りてこないガンワゴンと異なり、居座り後もゆっくり降下し続ける。
+  e.x = waveBaseX;
+  e.y = f(-16);
+  e.vx = 0;
+  e.vy = ENEMY_VY; // 定位置(MOTHER_TARGET_Y)までの入場降下速度
+  e.anchorX = waveBaseX;
+}
+
 // kind→初期化関数のディスパッチテーブル(段階3の決定事項: if の羅列にしない)。
-const ENEMY_INIT_BY_KIND = [initScatter, initDrifter, initReaper, initGunwagon, initWheelsaw];
+const ENEMY_INIT_BY_KIND = [
+  initScatter,
+  initDrifter,
+  initReaper,
+  initGunwagon,
+  initWheelsaw,
+  initHopper,
+  initSandworm,
+  initSidecar,
+  initMother,
+];
 
 function initEnemyFromWave(e, wave, memberIndex, gate) {
   const kind = KIND_BY_FORMATION[wave.formation];
@@ -453,7 +589,7 @@ function spawnPendingWave() {
   if (sectionIndex >= 2) {
     return;
   }
-  const section = STAGES[0].sections[sectionIndex];
+  const section = STAGES[curStageIndex].sections[sectionIndex];
   const waves = section.waves;
 
   while (waveCursor < waves.length) {
@@ -577,8 +713,119 @@ function moveWheelsaw(e) {
   }
 }
 
+function fireHopperBullet(e) {
+  // 真下固定(狙わない)。docs/enemies.md #4「着地の硬直中に真下へ1発」。
+  const b = spawn(ENEMY_BULLETS);
+  if (!b) {
+    return;
+  }
+  const dir = DIR16[HOPPER_BULLET_DOWN_DIR];
+  b.dirIdx = HOPPER_BULLET_DOWN_DIR;
+  b.x = e.x + f(4);
+  b.y = e.y + f(12);
+  b.vx = fmul(dir.dx, f(ENEMY_BULLET_SPEED));
+  b.vy = fmul(dir.dy, f(ENEMY_BULLET_SPEED));
+  b.tile = ENEMY_BULLET_TILE;
+  b.hp = 1;
+  b.flags = 0;
+  b.timer = 0;
+  b.kind = 0;
+}
+
+function moveHopper(e) {
+  // 跳ねながら降下し、着地の瞬間だけ完全停止する(その停止そのものが予備動作)。
+  // 停止中(HOPPER_LANDED_FLAG)に1回だけ真下へ撃つ。fireLimitの共通atkTimerパイプラインは
+  // 使わない(ENEMY_CAN_FIRE_BY_KIND[KIND_HOPPER]=false)ため、ここでfireCountを直接管理する。
+  e.timer += 1;
+  if ((e.flags & HOPPER_LANDED_FLAG) === 0) {
+    if (e.timer >= HOPPER_AIR_FRAMES) {
+      e.flags |= HOPPER_LANDED_FLAG;
+      e.timer = 0;
+      e.vy = 0; // 着地硬直: 完全停止
+      if (e.fireCount < HOPPER_FIRE_LIMIT) {
+        fireHopperBullet(e);
+        e.fireCount += 1;
+      }
+    }
+    return;
+  }
+  if (e.timer >= HOPPER_LAND_FRAMES) {
+    e.flags &= ~HOPPER_LANDED_FLAG;
+    e.timer = 0;
+    e.vy = ENEMY_VY; // 次の跳躍へ
+  }
+}
+
+function moveSidecar(e) {
+  // 左右に大きく往復しながら降下する(docs/enemies.md #7)。1発撃って離脱シーケンスへ入ったら
+  // (SIDECAR_LEAVING_FLAG)往復をやめ、まっすぐ画面外へ抜ける。振動ロジック自体はドリフターの
+  // 蛇行フェーズと同形(timer+anchorXの往復)を流用する。
+  if (e.flags & SIDECAR_LEAVING_FLAG) {
+    return;
+  }
+  const dir = e.flags & 1;
+  if (dir === 0) {
+    e.timer += SIDECAR_STEP;
+    if (e.timer >= SIDECAR_AMPLITUDE) {
+      e.flags |= 1;
+    }
+  } else {
+    e.timer -= SIDECAR_STEP;
+    if (e.timer <= -SIDECAR_AMPLITUDE) {
+      e.flags &= ~1;
+    }
+  }
+  e.x = e.anchorX + e.timer;
+}
+
+function moveMother(e) {
+  // 正面から入り、MOTHER_TARGET_Yへ達したら居座りに移る(ガンワゴンのSETTLEDと同形)。
+  // ただしガンワゴンと違い居座り後も止まらず、ゆっくり降下し続けながら左右へ揺れる
+  // (docs/enemies.md #14「ゆっくり降下しながら左右へ」)。射出上限に達すると
+  // leaveMotherがLEAVING_FLAGを立て、以後は揺れを止めてまっすぐ上へ抜ける。
+  if (e.flags & MOTHER_LEAVING_FLAG) {
+    return;
+  }
+  if ((e.flags & MOTHER_SETTLED_FLAG) === 0) {
+    if (e.y >= MOTHER_TARGET_Y) {
+      e.y = MOTHER_TARGET_Y;
+      e.vy = MOTHER_DRIFT_VY;
+      e.flags |= MOTHER_SETTLED_FLAG;
+      e.anchorX = e.x;
+      e.timer = 0;
+    }
+    return;
+  }
+  const dir = e.flags & 1;
+  if (dir === 0) {
+    e.timer += MOTHER_SWAY_STEP;
+    if (e.timer >= MOTHER_SWAY_AMPLITUDE) {
+      e.flags |= 1;
+    }
+  } else {
+    e.timer -= MOTHER_SWAY_STEP;
+    if (e.timer <= -MOTHER_SWAY_AMPLITUDE) {
+      e.flags &= ~1;
+    }
+  }
+  e.x = e.anchorX + e.timer;
+}
+
 // kind→毎フレーム移動関数のディスパッチテーブル(段階3の決定事項: if の羅列にしない)。
-const ENEMY_MOVE_BY_KIND = [moveNone, moveDrifter, moveReaper, moveGunwagon, moveWheelsaw];
+// サンドワーム(KIND_SANDWORM)は潜行中updateOneEnemyの先頭で専用分岐(updateSandwormPre)へ
+// バイパスされるため、ここではmoveNoneを割り当てる(浮上後は共通パイプラインへ合流し、
+// 単に真下へ抜けるだけでよい=横移動不要)。
+const ENEMY_MOVE_BY_KIND = [
+  moveNone,
+  moveDrifter,
+  moveReaper,
+  moveGunwagon,
+  moveWheelsaw,
+  moveHopper,
+  moveNone,
+  moveSidecar,
+  moveMother,
+];
 
 // --- 発射上限到達時の離脱トリガ(kind別)。ENEMY_MOVE_BY_KINDと同じ並び順。 ---
 // 呼ばれるのはfireEnemyBullet直後、fireCountがfireLimitに達した1フレームのみ(updateOneEnemy参照)。
@@ -595,9 +842,39 @@ function leaveGunwagon(e) {
   e.flags |= GUNWAGON_LEAVING_FLAG;
 }
 
-const ENEMY_LEAVE_BY_KIND = [leaveNone, leaveDrifter, leaveNone, leaveGunwagon, leaveNone];
+function leaveSidecar(e) {
+  // leaveDrifterと同形: 往復をやめ、まっすぐ画面外(下)へ抜ける。
+  e.flags |= SIDECAR_LEAVING_FLAG;
+}
+
+function leaveMother(e) {
+  // leaveGunwagonと同形: 居座っているため退場は来た側(上)へ抜ける。
+  e.vy = -ENEMY_VY;
+  e.flags |= MOTHER_LEAVING_FLAG;
+}
+
+const ENEMY_LEAVE_BY_KIND = [
+  leaveNone,
+  leaveDrifter,
+  leaveNone,
+  leaveGunwagon,
+  leaveNone,
+  leaveNone,
+  leaveNone,
+  leaveSidecar,
+  leaveMother,
+];
 
 function updateOneEnemy(e) {
+  // サンドワームの潜行中(SANDWORM_SUBMERGED_FLAG)は共通パイプライン(オフロード判定・vy積分・
+  // 画面外消滅・発射)を一切通さず、専用の状態機械(updateSandwormPre)へ完全にバイパスする。
+  // 「潜行中は無敵かつ判定なし」は、描画側(drawOneEnemy)とdamageEnemy/game.jsのisEnemyIntangible
+  // 参照側で別途保証する(このバイパス自体はx/yの更新と浮上トリガのみを担当する)。
+  if (e.kind === KIND_SANDWORM && (e.flags & SANDWORM_SUBMERGED_FLAG)) {
+    updateSandwormPre(e);
+    return;
+  }
+
   // 被弾フラッシュの残フレーム消化
   if (e.flashTimer > 0) {
     e.flashTimer -= 1;
@@ -696,7 +973,7 @@ function updateOneEnemy(e) {
       e.atkTimer = TELEGRAPH_SLOWDOWN_FRAMES + 1;
       return;
     }
-    fireEnemyBullet(e);
+    ENEMY_FIRE_ACTION_BY_KIND[e.kind](e);
     e.fireCount += 1;
     if (e.fireLimit > 0 && e.fireCount >= e.fireLimit) {
       // 一撃離脱の上限に到達。まず減速状態(TELEGRAPH_SLOWDOWN_NUM)を解除してから
@@ -746,12 +1023,189 @@ function fireEnemyBullet(e) {
   b.kind = 0;
 }
 
-// sectionIndex>=2 は STAGES[0].sections の boss セクション(index2)に到達済みという意味。
+// サイドカー専用の発射アクション: 自機の「移動先」(現在位置+推定速度×SIDECAR_LEAD_FRAMES)を
+// aim16で狙い、DIR16の初速から上向きに少し多めの初速(SIDECAR_LOB_ARC_BOOST)を引いて発射する。
+// 以後は毎フレームSIDECAR_LOB_GRAVITYで重力を加算する(updateOneEnemyBullet参照)ことで
+// 山なりの弧を描かせる。三角関数は使わず、既存のaim16/DIR16の範囲だけで方向を決める。
+function fireSidecarLob(e) {
+  const b = spawn(ENEMY_BULLETS);
+  if (!b) {
+    return;
+  }
+  const leadX = curPlayerX + curPlayerVX * SIDECAR_LEAD_FRAMES;
+  const leadY = curPlayerY + curPlayerVY * SIDECAR_LEAD_FRAMES;
+  const dirIdx = aim16(leadX - e.x, leadY - e.y);
+  const dir = DIR16[dirIdx];
+
+  b.dirIdx = dirIdx;
+  b.x = e.x + f(4);
+  b.y = e.y + f(12);
+  b.vx = fmul(dir.dx, f(SIDECAR_BULLET_SPEED));
+  b.vy = fmul(dir.dy, f(SIDECAR_BULLET_SPEED)) - SIDECAR_LOB_ARC_BOOST;
+  b.tile = ENEMY_BULLET_TILE; // 専用弾タイルは作らない(スプライト40枚上限を守るため既存の敵弾タイルを流用)
+  b.hp = 1;
+  b.flags = 0;
+  b.timer = 0;
+  b.kind = ENEMY_BULLET_KIND_LOB; // 重力を受ける特殊弾種別(updateOneEnemyBullet参照)
+}
+
+// マザー専用の発射アクション: 弾ではなくスキャッターを1体射出する(docs/enemies.md #14
+// 「ハッチからスキャッターを連続射出」)。射出されたスキャッターはENEMIESプールを1枠食うため、
+// スプライト枠が逼迫している場合は今回のサイクル分を諦める(fireCountは呼び出し元でどのみち
+// +1されるので、一撃離脱と同じく「機会を1回消費するが実際には出ないことがある」扱いにする。
+// fireEnemyBulletのプール満杯時と同じ寛容な劣化)。
+function fireMotherScatter(e) {
+  if (spriteBudgetLeft() < 4) {
+    return;
+  }
+  const c = spawn(ENEMIES);
+  if (!c) {
+    return;
+  }
+  c.kind = KIND_SCATTER;
+  c.tile = ENEMY_DEF_BY_KIND[KIND_SCATTER].tile;
+  c.hp = applyLoop(MOTHER_CHILD_HP, loop);
+  c.flags = 0;
+  c.atkTimer = 0; // スキャッターは発射しない種
+  c.formationId = e.formationId; // マザー自身の編隊IDを流用(専用トラッキングは持たない)
+  c.timer = 0;
+  c.everOnscreen = false; // 通常spawnと同じく、共通パイプラインの初回判定に任せる
+  c.fireCount = 0;
+  c.fireLimit = 0;
+  c.flashTimer = 0; // プール使い回し対策(initEnemyFromWaveと違い個別フィールドを手で設定するため明示する)
+  c.x = e.x;
+  c.y = e.y + f(8); // 後部ハッチ(下寄り)から出す見た目
+  c.vx = 0;
+  c.vy = ENEMY_VY; // 標準のスキャッター降下速度で真下へ抜けさせる
+}
+
+// kind→発射アクションのディスパッチテーブル(段階3グループ2の決定事項)。使われないkind
+// (ENEMY_CAN_FIRE_BY_KINDがfalseのkind)はどれを入れても実害がないため、既定でfireEnemyBulletを
+// 埋めておき、実際に狙い弾を撃つDRIFTER/GUNWAGONもそのままこの既定値を使う。
+const ENEMY_FIRE_ACTION_BY_KIND = [
+  fireEnemyBullet,
+  fireEnemyBullet, // DRIFTER
+  fireEnemyBullet,
+  fireEnemyBullet, // GUNWAGON
+  fireEnemyBullet,
+  fireEnemyBullet,
+  fireEnemyBullet,
+  fireSidecarLob, // SIDECAR
+  fireMotherScatter, // MOTHER
+];
+
+// --- サンドワーム専用: 潜行(不可視・無敵・判定なし)→予告(砂煙)→浮上して放射3発 ---
+
+// 砂煙の警告演出。「既存の描画手段(SMOKE)だけを使い、新しい描画インタフェースを増やさない」
+// (docs/enemies.md #6の注記)ため、game.js側が既に持つオフロード煙プール(SMOKE)をそのまま
+// 間借りする。ageSmoke/drawSmoke(game.js)は誰が生成したかを問わず動くので、enemies.js側からの
+// spawnだけで警告表現が成立する。vy=0にして「盛り上がる」その場のポップ演出にする
+// (自機オフロード煙のように流れ落とさない)。
+function spawnSandwormSmoke(x, y) {
+  const s = spawn(SMOKE);
+  if (!s) {
+    return;
+  }
+  s.x = x;
+  s.y = y;
+  s.vy = 0;
+  s.timer = 0;
+  s.tile = TILE_SMOKE;
+}
+
+// 浮上後の放射3発。中心方向(自機狙い)を軸に、DIR16の16方向を約±112.5度ずつずらした3方向へ
+// 均等に近い形で撃つ(5,5,6ステップ=112.5°/112.5°/135°の分割。三角関数は使わずDIR16の
+// インデックス演算だけで表現する)。
+function fireSandwormBulletAt(e, dirIdx) {
+  const b = spawn(ENEMY_BULLETS);
+  if (!b) {
+    return;
+  }
+  const dir = DIR16[dirIdx];
+  b.dirIdx = dirIdx;
+  b.x = e.x + f(4);
+  b.y = e.y + f(4);
+  b.vx = fmul(dir.dx, f(ENEMY_BULLET_SPEED));
+  b.vy = fmul(dir.dy, f(ENEMY_BULLET_SPEED));
+  b.tile = ENEMY_BULLET_TILE;
+  b.hp = 1;
+  b.flags = 0;
+  b.timer = 0;
+  b.kind = 0;
+}
+
+function fireSandwormBurst(e) {
+  const baseDir = aim16(curPlayerX - e.x, curPlayerY - e.y);
+  fireSandwormBulletAt(e, baseDir);
+  fireSandwormBulletAt(e, (baseDir + 5) % 16);
+  fireSandwormBulletAt(e, (baseDir + 11) % 16);
+}
+
+// updateOneEnemyから潜行中に限りバイパスされる専用の状態機械。e.timerをフェーズ内フレーム
+// カウンタとして専有する(他kindのtimer用途とは独立。サンドワームは共通パイプラインの
+// vy積分・オフロード・画面外消滅に一切触れないため衝突しない)。
+// フェーズ: (負のtimer=編隊内スタッガー待ち) → 潜行接近(HOMING) → 予告(TELEGRAPH、砂煙) → 浮上。
+function updateSandwormPre(e) {
+  e.timer += 1;
+  if (e.timer <= 0) {
+    return; // 編隊内の出現ずらし待ち。まだ何もしない(不可視のまま)
+  }
+  if (e.timer <= SANDWORM_HOMING_FRAMES) {
+    // 潜行接近: 不可視・無敵・判定なしのまま自機xへゆっくり寄る
+    if (e.x < curPlayerX) {
+      e.x += SANDWORM_HOMING_VX;
+      if (e.x > curPlayerX) {
+        e.x = curPlayerX;
+      }
+    } else if (e.x > curPlayerX) {
+      e.x -= SANDWORM_HOMING_VX;
+      if (e.x < curPlayerX) {
+        e.x = curPlayerX;
+      }
+    }
+    return;
+  }
+
+  const telegraphElapsed = e.timer - SANDWORM_HOMING_FRAMES;
+  if (telegraphElapsed === 1) {
+    e.anchorX = e.x; // 浮上位置をこの時点のxで確定する(以後x/yは動かさない)
+  }
+  if (telegraphElapsed <= SANDWORM_TELEGRAPH_FRAMES) {
+    // 砂煙が盛り上がる予告(唯一の警告)。SANDWORM_SMOKE_INTERVALごとに1個吹く。
+    if (telegraphElapsed % SANDWORM_SMOKE_INTERVAL === 1) {
+      spawnSandwormSmoke(e.anchorX, e.y);
+    }
+    return;
+  }
+
+  // 浮上: 以後は共通パイプラインへ合流させる(moveNoneでvy積分に任せ、まっすぐ下へ抜けさせる)。
+  e.flags &= ~SANDWORM_SUBMERGED_FLAG;
+  e.x = e.anchorX;
+  e.vy = ENEMY_VY;
+  fireSandwormBurst(e);
+}
+
+// game.js側の当たり判定(自機接触/自弾ヒット)が「潜行中は判定なし」を守るための公開判定。
+// 該当しないkind/状態では常にfalseを返す(既存の他kindの挙動には一切影響しない)。
+export function isEnemyIntangible(e) {
+  return e.kind === KIND_SANDWORM && (e.flags & SANDWORM_SUBMERGED_FLAG) !== 0;
+}
+
+// sectionIndex>=2 は STAGES[curStageIndex].sections の boss セクション(index2)に到達済みという意味。
 // game.js はこれを見てボス戦への遷移トリガに使う。
 // 進行の途中(セクション/ウェーブ)から開始する。検証・確認用の通常API。
 // スポーン順そのものは変えず、開始位置だけを進める。URLの解釈やデバッグ用の
 // 入口はここには置かない(src/debug.js が持ち、ブラウザ単体版からしか読まれない)。
-export function startAtWave(sectionIdx, waveIdx) {
+// stageIdx(第3引数、省略可): 段階3グループ2(ホッパー/サンドワーム/サイドカー/マザー)を
+// STAGES[1](ジャングル)の定義から検証するための追加パラメータ。省略時は0(荒野=通常のM1プレイ対象)
+// のままなので、既存の呼び出し(game.startPlayAt(section, wave, invuln))は一切挙動が変わらない。
+export function startAtWave(sectionIdx, waveIdx, stageIdx) {
+  let sti = stageIdx | 0;
+  if (sti < 0 || sti >= STAGES.length || STAGES[sti].sections.length === 0) {
+    sti = 0;
+  }
+  curStageIndex = sti;
+
   let si = sectionIdx | 0;
   if (si < 0) {
     si = 0;
@@ -759,7 +1213,7 @@ export function startAtWave(sectionIdx, waveIdx) {
   if (si > 1) {
     si = 1;
   }
-  const waves = STAGES[0].sections[si].waves;
+  const waves = STAGES[curStageIndex].sections[si].waves;
   let wi = waveIdx | 0;
   if (wi < 0) {
     wi = 0;
@@ -792,6 +1246,18 @@ export function clearEnemies() {
 // speedRatio: 8.8固定小数点(256=等倍)。自機死亡演出〜復活の間、game.jsの現在スクロール速度から
 // 算出して渡される（通常時は常に256=等速）。spawnFrozen: 死亡演出中はtrueになり、スポーン/発射を止める。
 export function updateEnemies(distance, playerX, playerY, scrollY, speedRatio, spawnFrozen) {
+  // サイドカーの「移動先を狙う」に使う自機速度の推定(前フレームとの差分)。resetEnemies直後の
+  // 最初の1フレームだけは差分を取らず0にする(playerVelocityPrimedがfalseの間)。
+  if (playerVelocityPrimed) {
+    curPlayerVX = playerX - prevPlayerX;
+    curPlayerVY = playerY - prevPlayerY;
+  } else {
+    curPlayerVX = 0;
+    curPlayerVY = 0;
+    playerVelocityPrimed = true;
+  }
+  prevPlayerX = playerX;
+  prevPlayerY = playerY;
   curPlayerX = playerX;
   curPlayerY = playerY;
   curScrollY = scrollY;
@@ -812,6 +1278,11 @@ function isBulletOffscreen(b) {
 }
 
 function updateOneEnemyBullet(b) {
+  if (b.kind === ENEMY_BULLET_KIND_LOB) {
+    // サイドカーの山なり弾のみ、weapons.jsのDYNAMITE_GRAVITYと同系統の重力を毎フレーム加算する
+    // (初速はfireSidecarLobで上向きに多めに設定済み。他の敵弾はkind=0のまま直進する)。
+    b.vy += SIDECAR_LOB_GRAVITY;
+  }
   b.x += b.vx;
   b.y += b.vy;
   if (isBulletOffscreen(b)) {
@@ -869,7 +1340,7 @@ function spawnPendingObstacles(distance) {
   if (sectionIndex !== 1) {
     return;
   }
-  const section = STAGES[0].sections[1];
+  const section = STAGES[curStageIndex].sections[1];
   const obstacles = section.obstacles;
   const localDistance = distance - sectionStartDistance;
 
@@ -900,6 +1371,9 @@ export function updateObstacles(distance, scrollSpeed) {
 }
 
 function drawOneEnemy(e) {
+  if (isEnemyIntangible(e)) {
+    return; // サンドワーム潜行中(無敵・判定なし)は不可視。唯一の警告は砂煙(SMOKE)側で出す
+  }
   let palInvert = false;
   if (e.flashTimer > 0) {
     palInvert = true;
@@ -1001,6 +1475,12 @@ export function damageEnemy(e, dmg) {
   // 非pierce弾はヒットで消え、鉄球(pierce)は既存通り貫通する — それが「弾は消す/貫通どちらでも
   // よい」という要件を自然に満たす。
   if (e.kind === KIND_WHEELSAW) {
+    return 0;
+  }
+  // サンドワーム潜行中: 無敵(docs/enemies.md #6)。hp減算・爆発・スコア・被弾フラッシュを
+  // 一切発生させない。ホイールソーと違い恒常的な無敵ではないため、fireSandwormBurstで
+  // SANDWORM_SUBMERGED_FLAGが落ちた(=浮上した)後は通常どおりダメージを受ける。
+  if (isEnemyIntangible(e)) {
     return 0;
   }
   e.hp -= dmg;

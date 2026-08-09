@@ -12,6 +12,10 @@ import {
   TILE16_ENEMY_REAPER,
   TILE16_ENEMY_GUNWAGON,
   TILE16_ENEMY_WHEELSAW,
+  TILE16_ENEMY_HOPPER,
+  TILE16_ENEMY_SANDWORM,
+  TILE16_ENEMY_SIDECAR,
+  TILE16_ENEMY_MOTHER,
 } from './tiles.js';
 
 // 左上座標→判定中心座標への変換はこの関数1つに集約する。
@@ -69,6 +73,15 @@ const ENEMY_HITBOX_BY_TILE = new Map([
   // TILE16_ENEMY_WHEELSAW: アート実測 16×16(全域、丸い鋸刃で四隅まで塗りが及ぶ) に対し
   // 12×12(half f(6),f(6))を採る。破壊不能だが自機接触判定には使うため必要。
   [TILE16_ENEMY_WHEELSAW, { hw: f(6), hh: f(6) }],
+  // 段階3グループ2(依頼元コーディネーターの実測に基づく採用値。根拠はdocs/enemies.md追記分に準拠)。
+  // TILE16_ENEMY_HOPPER: アート実測 bbox16×14/芯15×14 に対し12×10(half f(6),f(5))を採る。
+  [TILE16_ENEMY_HOPPER, { hw: f(6), hh: f(5) }],
+  // TILE16_ENEMY_SANDWORM: アート実測 bbox16×16/芯16×16 に対し12×12(half f(6),f(6))を採る。
+  [TILE16_ENEMY_SANDWORM, { hw: f(6), hh: f(6) }],
+  // TILE16_ENEMY_SIDECAR: アート実測 bbox14×16/芯13×14 に対し10×12(half f(5),f(6))を採る。
+  [TILE16_ENEMY_SIDECAR, { hw: f(5), hh: f(6) }],
+  // TILE16_ENEMY_MOTHER: アート実測 bbox14×16/芯14×16 に対し12×12(half f(6),f(6))を採る。
+  [TILE16_ENEMY_MOTHER, { hw: f(6), hh: f(6) }],
 ]);
 
 const OBSTACLE_HITBOX_BY_TILE = new Map([

@@ -16,9 +16,13 @@
 //   ?wave=3            … 本編(main)の3番目のウェーブから開始
 //   ?section=0&wave=2  … 前哨戦(prelude)の2番目から開始
 //   ?wave=6&invuln=1   … 加えて無敵で開始(既定は無敵にしない)
+//   ?wave=5&stage=1    … 段階3グループ2検証用。STAGES[1](ジャングル)のウェーブから開始
+//                        (game.jsのstartPlayAt第4引数をそのまま横流しするだけで、
+//                        stage省略時は0=荒野のまま。ここに新しいゲームロジックは足さない)
 import { startPlayAt } from './game.js';
 
 const DEFAULT_SECTION = 1; // section 未指定なら本編(main)
+const DEFAULT_STAGE = 0; // stage 未指定なら荒野(既存の挙動を変えない)
 const INVULN_FRAMES = 0x7fffffff; // 実質無期限。playerInvuln>0 の間は自機の判定がスキップされる
 
 export function applyDebugStart(search) {
@@ -34,7 +38,10 @@ export function applyDebugStart(search) {
   const sectionRaw = q.get('section');
   const sectionParsed = sectionRaw === null ? DEFAULT_SECTION : parseInt(sectionRaw, 10);
   const section = Number.isNaN(sectionParsed) ? DEFAULT_SECTION : sectionParsed;
+  const stageRaw = q.get('stage');
+  const stageParsed = stageRaw === null ? DEFAULT_STAGE : parseInt(stageRaw, 10);
+  const stage = Number.isNaN(stageParsed) ? DEFAULT_STAGE : stageParsed;
   const invuln = q.get('invuln') !== null ? INVULN_FRAMES : 0;
-  startPlayAt(section, wave, invuln);
+  startPlayAt(section, wave, invuln, stage);
   return true;
 }
