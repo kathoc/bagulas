@@ -62,6 +62,53 @@ const KIND_MOTHER = 8;
 const KIND_MIRAGE = 9;
 const KIND_CHASER = 10;
 
+// --- ENEMY_*_BY_KIND系テーブルの取り違え検出(モジュール初期化時のみ実行) ---
+// 実際に「MOTHER=8/MIRAGE=9/CHASER=10」を「MIRAGE=8」と誤認したまま素の配列へ値を入れかけた
+// ことがあった。素の配列は添字ズレを起こしても実行時に黙って通ってしまうため、KIND_*名と
+// 添字の対応をこの1箇所(KIND_ORDER)だけで定義し、以後のENEMY_*_BY_KIND配列はすべてbyKind()
+// 経由で定義する。byKind()は渡された配列をBY_KIND_TABLESへ登録するだけなので、新しいテーブルを
+// 足すときも「byKind('名前', [...])で包む」だけで自動的に検査対象になる
+// (frame内では呼ばれない=モジュール読み込み時の1回だけなので、new/配列生成禁止には抵触しない)。
+const KIND_ORDER = [
+  ['SCATTER', KIND_SCATTER],
+  ['DRIFTER', KIND_DRIFTER],
+  ['REAPER', KIND_REAPER],
+  ['GUNWAGON', KIND_GUNWAGON],
+  ['WHEELSAW', KIND_WHEELSAW],
+  ['HOPPER', KIND_HOPPER],
+  ['SANDWORM', KIND_SANDWORM],
+  ['SIDECAR', KIND_SIDECAR],
+  ['MOTHER', KIND_MOTHER],
+  ['MIRAGE', KIND_MIRAGE],
+  ['CHASER', KIND_CHASER],
+];
+const KIND_COUNT = KIND_ORDER.length;
+for (let ki = 0; ki < KIND_ORDER.length; ki++) {
+  const [kindName, kindValue] = KIND_ORDER[ki];
+  if (kindValue !== ki) {
+    throw new Error(
+      `enemies.js: KIND_ORDER の並びが KIND_${kindName}(=${kindValue}) と添字(${ki})で食い違っています`
+    );
+  }
+}
+const BY_KIND_TABLES = [];
+function byKind(name, arr) {
+  BY_KIND_TABLES.push([name, arr]);
+  return arr;
+}
+// ファイル末尾(全byKind()呼び出しの後)で1回だけ呼ぶ。ここより後にbyKind()を足すテーブルが
+// あると検査から漏れるため、呼び出し位置は必ずファイルの一番最後に置くこと。
+function validateByKindTables() {
+  for (const [name, arr] of BY_KIND_TABLES) {
+    if (!Array.isArray(arr) || arr.length !== KIND_COUNT) {
+      const len = Array.isArray(arr) ? arr.length : typeof arr;
+      throw new Error(
+        `enemies.js: ${name} の長さが ${len} で、種の総数(${KIND_COUNT})と一致していません`
+      );
+    }
+  }
+}
+
 // formation名(stages.js) → kind番号。wave.formationの値からここで解決する。
 const KIND_BY_FORMATION = {
   [FORMATIONS.SCATTER]: KIND_SCATTER,
@@ -78,7 +125,7 @@ const KIND_BY_FORMATION = {
 };
 
 // kindごとの静的データ(タイル)。耐久/出現口/編成数はwave側(stages.js)が持つためここには置かない。
-const ENEMY_DEF_BY_KIND = [
+const ENEMY_DEF_BY_KIND = byKind('ENEMY_DEF_BY_KIND', [
   { tile: TILE16_ENEMY_SCATTER },
   { tile: TILE16_ENEMY_DRIFTER },
   { tile: TILE16_ENEMY_REAPER },
@@ -90,7 +137,7 @@ const ENEMY_DEF_BY_KIND = [
   { tile: TILE16_ENEMY_MOTHER },
   { tile: TILE16_ENEMY_MIRAGE },
   { tile: TILE16_ENEMY_CHASER },
-];
+]);
 
 // 発射するkindかどうか。false のkindはatkTimerの減算/発射パイプラインへ一切触れない
 // (スキャッター/リーパー/ホイールソーは攻撃なし。無限に減算させて誤発火しないようここで断つ)。
@@ -99,7 +146,7 @@ const ENEMY_DEF_BY_KIND = [
 // 独自にfireCountを管理する(下記コメント参照)。
 // 段階3グループ3(MIRAGE/CHASER): 両方とも一撃離脱(1回撃って離脱)。CHASERは並走成立前は発射
 // パイプライン自体をブロックする(下記ENEMY_FIRE_BLOCK_BY_KIND参照)。
-const ENEMY_CAN_FIRE_BY_KIND = [false, true, false, true, false, false, false, true, true, true, true];
+const ENEMY_CAN_FIRE_BY_KIND = byKind('ENEMY_CAN_FIRE_BY_KIND', [false, true, false, true, false, false, false, true, true, true, true]);
 
 // 雑魚敵は一撃離脱(docs/enemies.md)。「離脱までに撃てる回数」をkind別に持つ。
 // GATE_X_MIN/GATE_X_SPREADと同じ「基準値+rndRangeでの上乗せ」の形にして、後で残り11種
@@ -109,8 +156,8 @@ const ENEMY_CAN_FIRE_BY_KIND = [false, true, false, true, false, false, false, t
 // ホッパー/サンドワームはこの配列を参照しない(ENEMY_CAN_FIRE_BY_KINDがfalseのため
 // initEnemyFromWaveがfireLimit=0で決め打ちする)。実際の発射回数上限はHOPPER_FIRE_LIMIT/
 // 専用の1回きり処理でkind固有に管理する(下記)。
-const ENEMY_FIRE_LIMIT_MIN_BY_KIND = [0, 1, 0, 2, 0, 0, 0, 1, 3, 1, 1]; // SIDECAR=1回, MOTHER=3回起点, MIRAGE/CHASER=1回
-const ENEMY_FIRE_LIMIT_SPREAD_BY_KIND = [1, 1, 1, 2, 1, 1, 1, 1, 2, 1, 1]; // MOTHERは+0..1で3〜4回に散らす
+const ENEMY_FIRE_LIMIT_MIN_BY_KIND = byKind('ENEMY_FIRE_LIMIT_MIN_BY_KIND', [0, 1, 0, 2, 0, 0, 0, 1, 3, 1, 1]); // SIDECAR=1回, MOTHER=3回起点, MIRAGE/CHASER=1回
+const ENEMY_FIRE_LIMIT_SPREAD_BY_KIND = byKind('ENEMY_FIRE_LIMIT_SPREAD_BY_KIND', [1, 1, 1, 2, 1, 1, 1, 1, 2, 1, 1]); // MOTHERは+0..1で3〜4回に散らす
 
 // 発射回数ベースの離脱が「自機が至近距離(±32px)で居座り続け、近距離発射抑止で撃てないまま
 // fireCountがfireLimitへ到達しない」せいで永久に成立しない事態(docs/spec.md「自機の可動範囲」
@@ -132,7 +179,40 @@ const ENEMY_FIRE_LIMIT_SPREAD_BY_KIND = [1, 1, 1, 2, 1, 1, 1, 1, 2, 1, 1]; // MO
 // 通常プレイでは発射回数のほうが先に来るので、これが効くのは居座られた時だけ。
 // 並び順は KIND_* の番号どおり(SCATTER0/DRIFTER1/REAPER2/GUNWAGON3/WHEELSAW4/
 // HOPPER5/SANDWORM6/SIDECAR7/MOTHER8/MIRAGE9/CHASER10)。
-const ENEMY_LEAVE_TIME_LIMIT_BY_KIND = [0, 0, 0, 900, 0, 0, 0, 0, 1200, 0, 900];
+const ENEMY_LEAVE_TIME_LIMIT_BY_KIND = byKind('ENEMY_LEAVE_TIME_LIMIT_BY_KIND', [0, 0, 0, 900, 0, 0, 0, 0, 1200, 0, 900]);
+
+// --- 画面内進入からNフレーム後に離脱フェーズへ入る(docs/enemies.md「動きの語彙」) ---
+// 上のENEMY_LEAVE_TIME_LIMIT_BY_KINDとは別物なので混同しないこと。
+//   - ENEMY_LEAVE_TIME_LIMIT_BY_KIND: 「spawnからの経過フレーム」基準。発射回数側の離脱条件が
+//     居座りにより永久に成立しない事態への保険(GUNWAGON/MOTHER/CHASERのみ)。fireLimit>0の
+//     個体にしか効かない。
+//   - ENEMY_LEAVE_ENTER_DELAY_BY_KIND(この配列): 「画面内に一度入ってからの経過フレーム
+//     (e.onscreenTimer, updateOneEnemy参照)」基準。攻撃を持たない種(スキャッター/リーパー/
+//     ホイールソー)は発射トリガが存在しないため、離脱フェーズへ入る手段そのものがなく、
+//     巡航のまま画面下へ抜けるだけになっていた。これを埋める共通の仕組みで、全kind対象。
+// 0=このNフレーム離脱を使わない(既定。従来どおり発射トリガのみで離脱する)。
+// 攻撃を持つ種にも値を設定してよく、その場合は発射回数到達とこのNフレームの「早い方」で離脱へ
+// 入る(triggerLeaveはどちらの経路から呼ばれてもe.leavingで二重発火を防ぐ)。今のところ攻撃を
+// 持つ種は発射トリガ側で問題なく離脱できているため0のままにしてある。
+// 値の根拠: ENEMY_VY(96=0.375px/frame)で画面高144pxを渡り切るのに要する時間は
+// (144+32)/0.375≈469フレーム。ENTER_DELAY_DEFAULT(180)はその半分以下に設定し、離脱の
+// 横加速(rampVx, LEAVE_SIDE_VX_STEP/MAX)がサイドへ抜けきるための猶予(残り約290フレーム)を
+// 十分に残す。ホイールソーは離脱フェーズへ入っても仕様上「直下」を維持する(leaveNoneのまま。
+// moveWheelsawの左右反射自体は変えない)。
+const ENEMY_LEAVE_ENTER_DELAY_DEFAULT = 180;
+const ENEMY_LEAVE_ENTER_DELAY_BY_KIND = byKind('ENEMY_LEAVE_ENTER_DELAY_BY_KIND', [
+  ENEMY_LEAVE_ENTER_DELAY_DEFAULT, // SCATTER
+  0, // DRIFTER(発射トリガのみ)
+  ENEMY_LEAVE_ENTER_DELAY_DEFAULT, // REAPER
+  0, // GUNWAGON(発射トリガ+ENEMY_LEAVE_TIME_LIMIT_BY_KINDの保険)
+  ENEMY_LEAVE_ENTER_DELAY_DEFAULT, // WHEELSAW
+  0, // HOPPER(専用の1発仕留めトリガを持つ)
+  0, // SANDWORM(浮上直後から専用の離脱ロジック)
+  0, // SIDECAR(発射トリガのみ)
+  0, // MOTHER(発射トリガ+ENEMY_LEAVE_TIME_LIMIT_BY_KINDの保険)
+  0, // MIRAGE(発射トリガのみ)
+  0, // CHASER(発射トリガ+ENEMY_LEAVE_TIME_LIMIT_BY_KINDの保険)
+]);
 
 // 発射上限に達した個体が離脱する時にkind固有の後始末(移動状態の切替)を行う関数テーブル。
 // 何もしないkindはleaveNoneを使う(ENEMY_MOVE_BY_KINDと同じ並び順: SCATTER/DRIFTER/REAPER/GUNWAGON/WHEELSAW)。
@@ -682,7 +762,7 @@ function initChaser(e, wave, memberIndex, gate) {
 }
 
 // kind→初期化関数のディスパッチテーブル(段階3の決定事項: if の羅列にしない)。
-const ENEMY_INIT_BY_KIND = [
+const ENEMY_INIT_BY_KIND = byKind('ENEMY_INIT_BY_KIND', [
   initScatter,
   initDrifter,
   initReaper,
@@ -694,7 +774,7 @@ const ENEMY_INIT_BY_KIND = [
   initMother,
   initMirage,
   initChaser,
-];
+]);
 
 function initEnemyFromWave(e, wave, memberIndex, gate) {
   const kind = KIND_BY_FORMATION[wave.formation];
@@ -708,6 +788,7 @@ function initEnemyFromWave(e, wave, memberIndex, gate) {
   e.everOnscreen = false; // プール使い回し対策。スポーン直後は必ず未経験へ戻す
   e.fireCount = 0;
   e.leaveTimer = 0; // プール使い回し対策。前回生存時の経過フレームを持ち越さない
+  e.onscreenTimer = 0; // プール使い回し対策。画面内に入ってからの経過フレーム(ENEMY_LEAVE_ENTER_DELAY_BY_KIND用)
   e.leaving = false;
   // 発射しないkindはfireLimitを0のままにする(rndRangeでLFSRを無駄に1歩進めない。
   // ENEMY_CAN_FIRE_BY_KINDがfalseならどのみち攻撃パイプラインへ触れないため実害はないが、
@@ -781,7 +862,20 @@ function moveNone() {}
 
 function moveScatter(e) {
   // 巡航=滑走。V字で広がった向き(initScatterで決めたvx)へそのまま横断し続ける。
-  // 画面端でclampしないので、そのまま横へ抜けて共通のx方向画面外判定で消える(=離脱は横流れ)。
+  // 離脱フェーズ(e.leaving。ENEMY_LEAVE_ENTER_DELAY_BY_KIND経由でtriggerLeaveが立てる)へ入ったら
+  // 離脱=横流れへ切り替え、巡航ですでに決まっている向き(vxの符号)のままLEAVE_SIDE_VX_MAXまで
+  // 加速する。LEAVE_SIDE_RIGHT_FLAG(個体の離脱方向抽選)ではなくvxの符号を使うのは、V字で
+  // 外側(off<0)を選んだ機がLEAVE_SIDE_RIGHT_FLAGと逆側だった場合に、巡航→離脱の切替で急に
+  // 逆方向へ折り返す不自然な動きを避けるため(巡航がすでに走っている向きをそのまま伸ばす)。
+  // 画面端でclampしないので、そのまま横へ抜けて共通のx方向画面外判定で消える。
+  if (e.leaving) {
+    const sign = e.vx < 0 ? -1 : 1;
+    e.vx += sign * LEAVE_SIDE_VX_STEP;
+    const mag = e.vx < 0 ? -e.vx : e.vx;
+    if (mag > LEAVE_SIDE_VX_MAX) {
+      e.vx = sign * LEAVE_SIDE_VX_MAX;
+    }
+  }
   e.x += e.vx;
 }
 
@@ -1072,7 +1166,7 @@ function moveSandwormLeave(e) {
 }
 
 // kind→毎フレーム移動関数のディスパッチテーブル(段階3の決定事項: if の羅列にしない)。
-const ENEMY_MOVE_BY_KIND = [
+const ENEMY_MOVE_BY_KIND = byKind('ENEMY_MOVE_BY_KIND', [
   moveScatter,
   moveDrifter,
   moveReaper,
@@ -1084,7 +1178,7 @@ const ENEMY_MOVE_BY_KIND = [
   moveMother,
   moveMirage,
   moveChaser,
-];
+]);
 
 // --- 発射上限到達時の離脱トリガ(kind別)。ENEMY_MOVE_BY_KINDと同じ並び順。 ---
 // 呼ばれるのはfireEnemyBullet直後、fireCountがfireLimitに達した1フレームのみ(updateOneEnemy参照)。
@@ -1126,19 +1220,19 @@ function leaveChaser(e) {
   e.flags |= CHASER_LEAVING_FLAG;
 }
 
-const ENEMY_LEAVE_BY_KIND = [
-  leaveNone,
+const ENEMY_LEAVE_BY_KIND = byKind('ENEMY_LEAVE_BY_KIND', [
+  leaveNone, // SCATTER: leaveNoneで十分。moveScatterがe.leavingを直接見て横流れへ切り替える
   leaveDrifter,
-  leaveNone,
+  leaveNone, // REAPER: moveReaperがspawn直後から弧離脱の加速をしているため後始末は不要
   leaveGunwagon,
-  leaveNone,
+  leaveNone, // WHEELSAW: 離脱フェーズへ入っても仕様上「直下」を維持するため何もしない(moveWheelsaw不変)
   leaveNone,
   leaveNone,
   leaveSidecar,
   leaveMother,
   leaveMirage,
   leaveChaser,
-];
+]);
 
 // triggerLeave(e): 発射回数到達/時間切れどちらの経路からも呼ぶ共通の離脱トリガ。
 // e.leavingを立ててから(二重トリガー防止)kind固有の離脱動作(ENEMY_LEAVE_BY_KIND)へ委譲する。
@@ -1199,6 +1293,11 @@ function updateOneEnemy(e) {
       e.everOnscreen = true;
     }
   }
+  // 画面内に入ってからの経過フレーム(ENEMY_LEAVE_ENTER_DELAY_BY_KIND用)。everOnscreenが
+  // 立つ前(入場待機中)はカウントしない=巡航に入ってから初めて動き出すNフレームのタイマー。
+  if (e.everOnscreen) {
+    e.onscreenTimer += 1;
+  }
 
   // 画面外消滅は全kind共通で「一度画面内(ONSCREEN_*の箱)に入った個体が、その箱のX/Yいずれかの
   // 境界を割ったら消す」に一本化する。旧実装はvyの符号で進行方向側のY境界だけを見て、X方向は
@@ -1220,6 +1319,16 @@ function updateOneEnemy(e) {
     }
     e.alive = false;
     return;
+  }
+
+  // 動きの語彙: 画面内に入ってからNフレーム後に離脱フェーズへ入る(docs/enemies.md「動きの語彙」)。
+  // 攻撃を持たない種(スキャッター/リーパー/ホイールソー)は発射トリガが存在しないため、これが
+  // 離脱フェーズへ入る唯一の手段になる。攻撃を持つ種にも値を設定した場合は、この判定が下の
+  // 発射回数トリガより先に来るため「早い方」で離脱へ入る(ENEMY_LEAVE_ENTER_DELAY_BY_KINDが0の
+  // kindはここを素通りし、従来どおり発射トリガのみで離脱する)。
+  const enterDelay = ENEMY_LEAVE_ENTER_DELAY_BY_KIND[e.kind];
+  if (!e.leaving && enterDelay > 0 && e.onscreenTimer >= enterDelay) {
+    triggerLeave(e);
   }
 
   // 発射しないkind(スキャッター/リーパー/ホイールソー)はここで打ち切り、atkTimerに一切触れない
@@ -1292,12 +1401,12 @@ function chaserFireBlocked(e) {
 // kind→追加の発射禁止条件(段階3グループ3の決定事項)。既存のisPlayerTooCloseToFireと同じ
 // 「攻撃サイクル自体はキャンセルせず待機させる」扱いにするための拡張ポイント。
 // デフォルトはnoFireBlock(常にfalse=禁止条件なし)。CHASERのみ「並走成立前は撃たない」を実装する。
-const ENEMY_FIRE_BLOCK_BY_KIND = [
+const ENEMY_FIRE_BLOCK_BY_KIND = byKind('ENEMY_FIRE_BLOCK_BY_KIND', [
   noFireBlock, noFireBlock, noFireBlock, noFireBlock, noFireBlock,
   noFireBlock, noFireBlock, noFireBlock, noFireBlock,
   noFireBlock, // MIRAGE
   chaserFireBlocked, // CHASER
-];
+]);
 
 function isPlayerTooCloseToFire(e) {
   let dx = curPlayerX + SPRITE_CENTER_OFFSET - (e.x + SPRITE_CENTER_OFFSET);
@@ -1384,6 +1493,7 @@ function fireMotherScatter(e) {
   c.fireCount = 0;
   c.fireLimit = 0;
   c.leaveTimer = 0; // fireLimit=0(この個体は時間ベース離脱を使わない)なので実害はないが、
+  c.onscreenTimer = 0; // プール使い回し対策。ENEMY_LEAVE_ENTER_DELAY_BY_KIND[SCATTER]は通常のスキャッターと共用する
   c.leaving = false; // プール使い回し時に前回生存分の値を持ち越さないよう念のため揃えておく。
   c.flashTimer = 0; // プール使い回し対策(initEnemyFromWaveと違い個別フィールドを手で設定するため明示する)
   c.x = e.x;
@@ -1395,7 +1505,7 @@ function fireMotherScatter(e) {
 // kind→発射アクションのディスパッチテーブル(段階3グループ2の決定事項)。使われないkind
 // (ENEMY_CAN_FIRE_BY_KINDがfalseのkind)はどれを入れても実害がないため、既定でfireEnemyBulletを
 // 埋めておき、実際に狙い弾を撃つDRIFTER/GUNWAGONもそのままこの既定値を使う。
-const ENEMY_FIRE_ACTION_BY_KIND = [
+const ENEMY_FIRE_ACTION_BY_KIND = byKind('ENEMY_FIRE_ACTION_BY_KIND', [
   fireEnemyBullet,
   fireEnemyBullet, // DRIFTER
   fireEnemyBullet,
@@ -1407,7 +1517,13 @@ const ENEMY_FIRE_ACTION_BY_KIND = [
   fireMotherScatter, // MOTHER
   fireEnemyBullet, // MIRAGE
   fireEnemyBullet, // CHASER
-];
+]);
+
+// 全ENEMY_*_BY_KIND(byKind()で登録した分)の長さがKIND_COUNTと一致するかをここで検査する。
+// モジュール読み込み時に1回だけ実行され、ズレていればその場でthrowする(黙って続行しない)。
+// 新しいテーブルを追加する場合、必ずこの呼び出しより前にbyKind()で登録すること
+// (この呼び出しの位置がファイル内で最後のbyKind呼び出しより後であることが検査の前提)。
+validateByKindTables();
 
 // --- サンドワーム専用: 潜行(不可視・無敵・判定なし)→予告(砂煙)→浮上して放射3発 ---
 
