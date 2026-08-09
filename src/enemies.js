@@ -11,6 +11,7 @@ import {
   SCORE_POPS,
   spawn,
   forEach,
+  forEachFrom,
 } from './entities.js';
 import {
   pushMeta16,
@@ -488,19 +489,27 @@ function drawOneEnemy(e) {
   // オフロード時の上下1pxガタガタ揺れ（描画のみ。e.y自体は変更しないので当たり判定に影響しない）。
   // 周期をSHAKE_PERIOD_SHIFT分伸ばして控えめにする(game.jsのplayer側と同じ考え方)。
   const shakeY = e.offRoad ? (((curDistance >> SHAKE_PERIOD_SHIFT) & 1) ? -1 : 1) : 0;
-  pushMeta16(toPx(e.x), toPx(e.y) + shakeY, e.tile, 0, palInvert);
+  if (pushMeta16(toPx(e.x), toPx(e.y) + shakeY, e.tile, 0, palInvert)) {
+    e.lastDrawnFrame = curDistance;
+  }
 }
 
+// 優先度3(自機・敵弾に次ぐ)。枠が足りない時のために、毎フレーム開始位置をcurDistance基準で
+// ずらして巡回する(forEachFrom)。同じ個体だけが永久に描かれない状態を避ける(実機ちらつき相当)。
 export function drawEnemies() {
-  forEach(ENEMIES, drawOneEnemy);
+  forEachFrom(ENEMIES, curDistance, drawOneEnemy);
 }
 
 function drawOneEnemyBullet(b) {
-  pushSprite(toPx(b.x), toPx(b.y), b.tile, 0);
+  if (pushSprite(toPx(b.x), toPx(b.y), b.tile, 0)) {
+    b.lastDrawnFrame = curDistance;
+  }
 }
 
+// 優先度2(自機に次いで最優先で残す)。理不尽な被弾を避けるため、枠が足りなくても
+// 巡回順で全弾が交互に表示される(forEachFrom)。
 export function drawEnemyBullets() {
-  forEach(ENEMY_BULLETS, drawOneEnemyBullet);
+  forEachFrom(ENEMY_BULLETS, curDistance, drawOneEnemyBullet);
 }
 
 function drawOneObstacle(o) {

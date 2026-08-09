@@ -15,6 +15,7 @@ function makeBaseSlot() {
     flags: 0,
     timer: 0,
     kind: 0,
+    lastDrawnFrame: -1, // 検証用: pushSprite/pushMeta16が真を返した時点のフレーム番号。spawn時に-1へ初期化する。
   };
 }
 
@@ -83,6 +84,7 @@ export function spawn(pool) {
     const slot = pool[i];
     if (!slot.alive) {
       slot.alive = true;
+      slot.lastDrawnFrame = -1; // 使い回しスロットなので、前回生存時の描画履歴を必ず捨てる
       return slot;
     }
   }
@@ -96,6 +98,26 @@ export function forEach(pool, fn) {
     const slot = pool[i];
     if (slot.alive) {
       fn(slot, i);
+    }
+  }
+}
+
+// forEachFrom(pool, startFrame, fn): forEachと同じだが、走査の開始indexを
+// startFrame(通常はフレームカウンタをそのまま渡す)から pool.length で割った余りにする。
+// 呼ぶたびに開始位置がずれるため、スプライト枠が足りず末尾が毎回捨てられる状況でも
+// 「同じ個体だけが永久に描かれない」状態を避けられる（実機GBのちらつきに相当）。
+// 配列やクロージャは一切生成しない（インデックス計算のみ）。
+export function forEachFrom(pool, startFrame, fn) {
+  const n = pool.length;
+  let start = startFrame % n;
+  if (start < 0) {
+    start += n;
+  }
+  for (let i = 0; i < n; i++) {
+    const idx = (start + i) % n;
+    const slot = pool[idx];
+    if (slot.alive) {
+      fn(slot, idx);
     }
   }
 }

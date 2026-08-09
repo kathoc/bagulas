@@ -17,7 +17,7 @@ import {
 import { isDown, isPressed, K, isTouch } from './input.js';
 import { pushMeta16, pushSprite, drawText, drawSolidRect, spriteBudgetLeft, isOffRoadAt } from './gfx.js';
 import { TILE16_PLAYER, TILE_SMOKE } from './tiles.js';
-import { PLAYER_BULLETS, ENEMIES, ENEMY_BULLETS, OBSTACLES, EFFECTS, SCORE_POPS, SMOKE, spawn, forEach } from './entities.js';
+import { PLAYER_BULLETS, ENEMIES, ENEMY_BULLETS, OBSTACLES, EFFECTS, SCORE_POPS, SMOKE, spawn, forEach, forEachFrom } from './entities.js';
 import { fire, updateBullets, WEAPON, WEAPON_NAMES } from './weapons.js';
 import {
   resetEnemies,
@@ -754,29 +754,43 @@ export function updateGame(scrollY) {
   forEach(SMOKE, ageSmoke);
 }
 
+// 優先度7(最後)。消えてよいのは自弾だけ、という仕様上ここが最も枠を失いやすい位置になる。
+// 巡回順(forEachFrom)で毎フレーム開始位置をずらし、同じ弾だけが消え続けないようにする。
 function drawBullet(b) {
-  pushSprite(toPx(b.x), toPx(b.y), b.tile, 0);
-}
-
-function drawEffect(e) {
-  if (e.kind === EFFECT_KIND_ENEMY_EXPLOSION) {
-    // 爆発は実素材(explosion.png)由来の16x16メタスプライト。pushMeta16はall-or-nothingで
-    // スプライト40個/走査線10個の上限を自前で守るため、ここでの追加チェックは不要。
-    pushMeta16(toPx(e.x), toPx(e.y), e.tile, 0, false);
-  } else {
-    pushSprite(toPx(e.x), toPx(e.y), e.tile, 0);
+  if (pushSprite(toPx(b.x), toPx(b.y), b.tile, 0)) {
+    b.lastDrawnFrame = distance;
   }
 }
 
+// 優先度5(敵/障害物の次、砂煙より上)。
+function drawEffect(e) {
+  let drawn;
+  if (e.kind === EFFECT_KIND_ENEMY_EXPLOSION) {
+    // 爆発は実素材(explosion.png)由来の16x16メタスプライト。pushMeta16はall-or-nothingで
+    // スプライト40個/走査線10個の上限を自前で守るため、ここでの追加チェックは不要。
+    drawn = pushMeta16(toPx(e.x), toPx(e.y), e.tile, 0, false);
+  } else {
+    drawn = pushSprite(toPx(e.x), toPx(e.y), e.tile, 0);
+  }
+  if (drawn) {
+    e.lastDrawnFrame = distance;
+  }
+}
+
+// スコアポップはdrawText(=raster().blitGlyph直書き)でスプライト枠を消費しないため、
+// 優先順位付けの対象外(常に描かれる)。
 function drawScorePop(p) {
   drawText(toPx(p.x), toPx(p.y), '' + p.value);
 }
 
+// 優先度6(敵弾・敵・障害物・エフェクトより下、自弾より上)。
 // 煙は点滅しながら流れて見えるよう、偶数timerのフレームだけ描く。
-// spriteBudgetLeft()>0のときだけ描き、予算が逼迫していれば真っ先に諦める(最後尾のforEachのため)。
+// spriteBudgetLeft()>0のときだけ描き、予算が逼迫していれば真っ先に諦める。
 function drawSmoke(s) {
   if ((s.timer & 1) === 0 && spriteBudgetLeft() > 0) {
-    pushSprite(toPx(s.x), toPx(s.y), s.tile, 0);
+    if (pushSprite(toPx(s.x), toPx(s.y), s.tile, 0)) {
+      s.lastDrawnFrame = distance;
+    }
   }
 }
 
@@ -810,22 +824,29 @@ export function drawGame() {
       pushMeta16(toPx(playerX), toPx(playerY) + shakeY, TILE16_PLAYER, 0, false);
     }
 
+    // スプライト超過時のちらつき対応(docs/spec.md「スプライト超過の扱い」)。
+    // 優先順位: 自機 > 敵弾 > 敵 > 障害物 > エフェクト > 砂煙 > 自弾。枠が足りない時は
+    // この順で下位から捨てる。同一優先度内はforEachFrom()でフレームごとに開始位置をずらし、
+    // 「同じ個体だけが永久に消える」のを避ける(実機GBのちらつき相当)。
+    drawEnemyBullets(); // 優先度2。BOSS中もボス弾はこのプール経由で描かれる
     if (gameState === STATE.PLAY) {
-      drawObstacles();
-      drawEnemies();
+      drawEnemies(); // 優先度3
+      // 障害物はdrawBGObject()でBG層に直接描き、スプライト枠(40/10)を一切消費しない。
+      // よってここでの描画順自体はちらつき対策として無意味だが、仕様の優先順位どおりの位置に置く。
+      drawObstacles(); // 優先度4
     } else {
-      drawBoss();
+      drawBoss(); // 優先度3相当(ボスは敵の一種として扱う)
     }
-    forEach(PLAYER_BULLETS, drawBullet);
-    drawEnemyBullets(); // BOSS中もボス弾はこのプール経由で描かれる
-    forEach(EFFECTS, drawEffect);
-    forEach(SCORE_POPS, drawScorePop);
+    forEachFrom(EFFECTS, distance, drawEffect); // 優先度5
+    forEachFrom(SCORE_POPS, distance, drawScorePop); // スプライト枠を消費しないため優先順位の対象外
 
-    // オフロード時の煙(8x8、自機の左下・右下から下方向へ流れて消える)。予算を最も必要としない
-    // 最後尾で描き、自機/敵/弾の予算を奪わない。
+    // オフロード時の煙(8x8、自機の左下・右下から下方向へ流れて消える)。優先度6。
     if (gameState === STATE.PLAY) {
-      forEach(SMOKE, drawSmoke);
+      forEachFrom(SMOKE, distance, drawSmoke);
     }
+
+    // 優先度7(最後・最下位)。消えてよいのは自弾だけ、という仕様どおり最後に描く。
+    forEachFrom(PLAYER_BULLETS, distance, drawBullet);
 
     // HUDの可読性確保: テキストの下に最暗色の帯を敷いてから描く（背景の道/荒野と混ざらないように）
     // 4pxフォント化でSCORE/LIVES/武器名を1行に収められるようになったため1行のみ描く。
