@@ -16,6 +16,8 @@ import {
   TILE16_ENEMY_SANDWORM,
   TILE16_ENEMY_SIDECAR,
   TILE16_ENEMY_MOTHER,
+  TILE16_ENEMY_MIRAGE,
+  TILE16_ENEMY_CHASER,
 } from './tiles.js';
 
 // 左上座標→判定中心座標への変換はこの関数1つに集約する。
@@ -65,23 +67,30 @@ const ENEMY_HITBOX_BY_TILE = new Map([
   [TILE16_ENEMY_SCATTER, { hw: f(6), hh: f(6) }],
   // TILE16_ENEMY_DRIFTER: アート実測 16×16(全域) に対し12×12(half f(6),f(6))を採る。
   [TILE16_ENEMY_DRIFTER, { hw: f(6), hh: f(6) }],
-  // TILE16_ENEMY_REAPER: アート実測 12×15(x2-13,y1-15、車体がやや縦長・細身) に対し
-  // 10×12(half f(5),f(6))を採る。
-  [TILE16_ENEMY_REAPER, { hw: f(5), hh: f(6) }],
+  // TILE16_ENEMY_REAPER: 再生成後のアート実測 bbox4×11(x6-9,y2-12。旗を立てた細身の車体)。
+  // 旧アート(12×15)向けの10×12は絵より広くなってしまうため、4×8(half f(2),f(4))へ縮める。
+  [TILE16_ENEMY_REAPER, { hw: f(2), hh: f(4) }],
   // TILE16_ENEMY_GUNWAGON: アート実測 15×16(x0-14,y0-15) に対し12×12(half f(6),f(6))を採る。
   [TILE16_ENEMY_GUNWAGON, { hw: f(6), hh: f(6) }],
   // TILE16_ENEMY_WHEELSAW: アート実測 16×16(全域、丸い鋸刃で四隅まで塗りが及ぶ) に対し
   // 12×12(half f(6),f(6))を採る。破壊不能だが自機接触判定には使うため必要。
   [TILE16_ENEMY_WHEELSAW, { hw: f(6), hh: f(6) }],
   // 段階3グループ2(依頼元コーディネーターの実測に基づく採用値。根拠はdocs/enemies.md追記分に準拠)。
-  // TILE16_ENEMY_HOPPER: アート実測 bbox16×14/芯15×14 に対し12×10(half f(6),f(5))を採る。
-  [TILE16_ENEMY_HOPPER, { hw: f(6), hh: f(5) }],
-  // TILE16_ENEMY_SANDWORM: アート実測 bbox16×16/芯16×16 に対し12×12(half f(6),f(6))を採る。
-  [TILE16_ENEMY_SANDWORM, { hw: f(6), hh: f(6) }],
-  // TILE16_ENEMY_SIDECAR: アート実測 bbox14×16/芯13×14 に対し10×12(half f(5),f(6))を採る。
-  [TILE16_ENEMY_SIDECAR, { hw: f(5), hh: f(6) }],
+  // TILE16_ENEMY_HOPPER: 再生成後のアート実測 bbox8×8(x4-11,y4-11。脚が四方へ張り出す)。
+  // 脚の隙間まで当たると理不尽なので、胴体側の6×6(half f(3),f(3))を採る。
+  [TILE16_ENEMY_HOPPER, { hw: f(3), hh: f(3) }],
+  // TILE16_ENEMY_SANDWORM: 再生成後のアート実測 bbox4×9(x6-9,y4-12。縦に積んだ蛇腹)。
+  // 旧アート(16×16)向けの12×12は絵の3倍の幅になるため、4×8(half f(2),f(4))へ縮める。
+  [TILE16_ENEMY_SANDWORM, { hw: f(2), hh: f(4) }],
+  // TILE16_ENEMY_SIDECAR: 再生成後のアート実測 bbox10×10(x3-12,y3-12。片側に張り出した座席)。
+  // 8×8(half f(4),f(4))を採る。
+  [TILE16_ENEMY_SIDECAR, { hw: f(4), hh: f(4) }],
   // TILE16_ENEMY_MOTHER: アート実測 bbox14×16/芯14×16 に対し12×12(half f(6),f(6))を採る。
   [TILE16_ENEMY_MOTHER, { hw: f(6), hh: f(6) }],
+  // TILE16_ENEMY_MIRAGE: アート実測 bbox16×16/芯16×16 に対し12×12(half f(6),f(6))を採る。
+  [TILE16_ENEMY_MIRAGE, { hw: f(6), hh: f(6) }],
+  // TILE16_ENEMY_CHASER: アート実測 bbox8×16/芯6×12 に対し6×10(half f(3),f(5))を採る。
+  [TILE16_ENEMY_CHASER, { hw: f(3), hh: f(5) }],
 ]);
 
 const OBSTACLE_HITBOX_BY_TILE = new Map([
