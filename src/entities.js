@@ -54,6 +54,8 @@ export const ENEMIES = makePool(20, (s) => {
   s.everOnscreen = false; // 一度でも画面内に入ったことがあるか。spawn待機位置での誤消滅を防ぐため必須。
   s.fireCount = 0; // これまでに発射した回数(一撃離脱の判定に使う)。
   s.fireLimit = 0; // この個体が離脱するまでに撃てる回数。kind別にspawn時決定(0=このフィールド未使用)。
+  s.leaveTimer = 0; // spawn以降の経過フレーム数(発射回数と独立の時間ベース離脱に使う汎用カウンタ)。
+  s.leaving = false; // 既に(発射回数/時間どちらかの経路で)離脱がトリガー済みか。二重トリガー防止。
 });
 
 // ENEMY_BULLETS: 敵弾プール（最大8）。src/enemies.js（Step3）が生成・更新する。
@@ -71,12 +73,6 @@ export const EFFECTS = makePool(8, (s) => {
 // OBSTACLES: 障害物プール（最大12, 岩/柵/サボテン）。src/stages.js/game.js（Step3/4）が生成・更新する。
 // 追加フィールド: なし（destructible=破壊可否は flags bit0 で表現、hp は破壊可障害物のみ使用）。
 export const OBSTACLES = makePool(12, () => {});
-
-// SCORE_POPS: スコア加算演出プール（最大4）。game.js が撃破/破壊時に生成する。
-// 追加フィールド: value=表示・加算するスコア量。
-export const SCORE_POPS = makePool(4, (s) => {
-  s.value = 0;
-});
 
 // SMOKE: オフロード演出用の砂煙パーティクルプール（最大8）。game.js が自機オフロード時に生成・更新・描画する。
 // 追加フィールド: なし（x/y/vy/timerは基底スロットのものをそのまま使う。tileはTILE_SMOKE固定）。

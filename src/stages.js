@@ -14,6 +14,9 @@ export const FORMATIONS = Object.freeze({
   SANDWORM: 'SANDWORM',
   SIDECAR: 'SIDECAR',
   MOTHER: 'MOTHER',
+  // 段階3グループ3(docs/enemies.md #8,#9)
+  MIRAGE: 'MIRAGE',
+  CHASER: 'CHASER',
 });
 
 // 障害物種別と破壊可否テーブル
@@ -54,6 +57,9 @@ export const FORMATION_GATES = Object.freeze({
   [FORMATIONS.SANDWORM]: [GATES.UNDERGROUND],
   [FORMATIONS.SIDECAR]: [GATES.FRONT_LEFT, GATES.FRONT_RIGHT],
   [FORMATIONS.MOTHER]: [GATES.FRONT_CENTER],
+  // 段階3グループ3(背後出現は自動解決に一本化する)
+  [FORMATIONS.MIRAGE]: [GATES.BACK_AUTO],
+  [FORMATIONS.CHASER]: [GATES.BACK_AUTO],
 });
 
 // 周回ごとの整数倍率適用ヘルパ。
@@ -194,6 +200,47 @@ const stage2Boss = {
   bossId: 2,
 };
 
+// ステージ3: オアシス ---------------------------------------------------
+// 段階3グループ3(ミラージュ/チェイサー)の検証用に定義する。docs/enemies.md「ステージ別の配分」は
+// 「主力ミラージュ、チェイサー / 混ぜるガンワゴン、リーパー」だが、段階3グループ2の前例(ステージ2は
+// 自グループの4種のみで構成し、既存グループを混ぜていない)に合わせ、本ステージもグループ3の2種のみで
+// 構成する(スコープ外の種を混ぜない)。
+// game.js の isStagePlayable() は現状 stageIndex===0 のみを実プレイ対象にしているため、
+// このセクションは通常のステージ進行では到達しない。検証は game.startPlayAt(section, wave, invuln, 2) 経由で行う。
+const STAGE3_PRELUDE_LENGTH = 800;
+const STAGE3_MAIN_LENGTH = 1400;
+
+const stage3Prelude = {
+  type: 'prelude',
+  length: STAGE3_PRELUDE_LENGTH,
+  waves: [
+    { formation: FORMATIONS.MIRAGE, count: 3, hp: 4, gate: GATES.BACK_AUTO },
+    { formation: FORMATIONS.CHASER, count: 3, hp: 4, gate: GATES.BACK_AUTO },
+    { formation: FORMATIONS.MIRAGE, count: 3, hp: 4, gate: GATES.BACK_AUTO },
+  ],
+  obstacles: [],
+};
+
+const stage3Main = {
+  type: 'main',
+  length: STAGE3_MAIN_LENGTH,
+  waves: [
+    { formation: FORMATIONS.CHASER, count: 3, hp: 5, gate: GATES.BACK_AUTO },
+    { formation: FORMATIONS.MIRAGE, count: 3, hp: 5, gate: GATES.BACK_AUTO },
+    { formation: FORMATIONS.CHASER, count: 3, hp: 5, gate: GATES.BACK_AUTO },
+    { formation: FORMATIONS.MIRAGE, count: 3, hp: 5, gate: GATES.BACK_AUTO },
+  ],
+  obstacles: [],
+};
+
+const stage3Boss = {
+  type: 'boss',
+  length: 0,
+  waves: [],
+  obstacles: [],
+  bossId: 3,
+};
+
 // ステージ5: 海の上 — ボスラッシュ
 // ステージ1〜4のボス（強化再戦）→ 新ボス5体目
 const stage5BossRush = [
@@ -221,7 +268,7 @@ export const STAGES = [
     id: 3,
     name: 'OASIS',
     tileset: 'oasis',
-    sections: [],
+    sections: [stage3Prelude, stage3Main, stage3Boss],
   },
   {
     id: 4,

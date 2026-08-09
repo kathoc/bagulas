@@ -8,7 +8,6 @@ import {
   ENEMY_BULLETS,
   OBSTACLES,
   EFFECTS,
-  SCORE_POPS,
   SMOKE,
   spawn,
   forEach,
@@ -39,6 +38,8 @@ import {
   TILE16_ENEMY_SANDWORM,
   TILE16_ENEMY_SIDECAR,
   TILE16_ENEMY_MOTHER,
+  TILE16_ENEMY_MIRAGE,
+  TILE16_ENEMY_CHASER,
   TILE_BULLET_ENEMY,
   TILE_SMOKE,
 } from './tiles.js';
@@ -57,6 +58,9 @@ const KIND_HOPPER = 5;
 const KIND_SANDWORM = 6;
 const KIND_SIDECAR = 7;
 const KIND_MOTHER = 8;
+// 段階3グループ3(docs/enemies.md #8,#9)。背後出現(BACK_LEFT/BACK_RIGHT)を初めて実地に使う2種。
+const KIND_MIRAGE = 9;
+const KIND_CHASER = 10;
 
 // formation名(stages.js) → kind番号。wave.formationの値からここで解決する。
 const KIND_BY_FORMATION = {
@@ -69,6 +73,8 @@ const KIND_BY_FORMATION = {
   [FORMATIONS.SANDWORM]: KIND_SANDWORM,
   [FORMATIONS.SIDECAR]: KIND_SIDECAR,
   [FORMATIONS.MOTHER]: KIND_MOTHER,
+  [FORMATIONS.MIRAGE]: KIND_MIRAGE,
+  [FORMATIONS.CHASER]: KIND_CHASER,
 };
 
 // kindごとの静的データ(タイル)。耐久/出現口/編成数はwave側(stages.js)が持つためここには置かない。
@@ -82,6 +88,8 @@ const ENEMY_DEF_BY_KIND = [
   { tile: TILE16_ENEMY_SANDWORM },
   { tile: TILE16_ENEMY_SIDECAR },
   { tile: TILE16_ENEMY_MOTHER },
+  { tile: TILE16_ENEMY_MIRAGE },
+  { tile: TILE16_ENEMY_CHASER },
 ];
 
 // 発射するkindかどうか。false のkindはatkTimerの減算/発射パイプラインへ一切触れない
@@ -89,7 +97,9 @@ const ENEMY_DEF_BY_KIND = [
 // ホッパー/サンドワームもfalse: どちらも共通の「減速→フラッシュ→発射」atkTimerパイプラインに
 // 乗らない専用の予備動作(着地の停止/砂煙の盛り上がり)を持つため、moveHopper/updateSandwormPre側で
 // 独自にfireCountを管理する(下記コメント参照)。
-const ENEMY_CAN_FIRE_BY_KIND = [false, true, false, true, false, false, false, true, true];
+// 段階3グループ3(MIRAGE/CHASER): 両方とも一撃離脱(1回撃って離脱)。CHASERは並走成立前は発射
+// パイプライン自体をブロックする(下記ENEMY_FIRE_BLOCK_BY_KIND参照)。
+const ENEMY_CAN_FIRE_BY_KIND = [false, true, false, true, false, false, false, true, true, true, true];
 
 // 雑魚敵は一撃離脱(docs/enemies.md)。「離脱までに撃てる回数」をkind別に持つ。
 // GATE_X_MIN/GATE_X_SPREADと同じ「基準値+rndRangeでの上乗せ」の形にして、後で残り11種
@@ -99,8 +109,23 @@ const ENEMY_CAN_FIRE_BY_KIND = [false, true, false, true, false, false, false, t
 // ホッパー/サンドワームはこの配列を参照しない(ENEMY_CAN_FIRE_BY_KINDがfalseのため
 // initEnemyFromWaveがfireLimit=0で決め打ちする)。実際の発射回数上限はHOPPER_FIRE_LIMIT/
 // 専用の1回きり処理でkind固有に管理する(下記)。
-const ENEMY_FIRE_LIMIT_MIN_BY_KIND = [0, 1, 0, 2, 0, 0, 0, 1, 3]; // SIDECAR=1回, MOTHER=3回起点
-const ENEMY_FIRE_LIMIT_SPREAD_BY_KIND = [1, 1, 1, 2, 1, 1, 1, 1, 2]; // MOTHERは+0..1で3〜4回に散らす
+const ENEMY_FIRE_LIMIT_MIN_BY_KIND = [0, 1, 0, 2, 0, 0, 0, 1, 3, 1, 1]; // SIDECAR=1回, MOTHER=3回起点, MIRAGE/CHASER=1回
+const ENEMY_FIRE_LIMIT_SPREAD_BY_KIND = [1, 1, 1, 2, 1, 1, 1, 1, 2, 1, 1]; // MOTHERは+0..1で3〜4回に散らす
+
+// 発射回数ベースの離脱が「自機が至近距離(±32px)で居座り続け、近距離発射抑止で撃てないまま
+// fireCountがfireLimitへ到達しない」せいで永久に成立しない事態(docs/spec.md「自機の可動範囲」
+// 節の注意書き参照)への保険。leaveTimer(spawnからの経過フレーム、ブロック中も含め毎フレーム
+// 加算=updateOneEnemy参照)がここの値に達したら、発射回数を待たずに強制離脱させる。
+// 0=このバックストップを使わない(既定)。「画面上部に居座る」GUNWAGON/MOTHERのみ設定する。
+// 値の根拠: 1周期はFIRE_INTERVAL_BASE(150)+jitter(0〜39)=最大189フレーム
+// (この中にTELEGRAPH_SLOWDOWN_FRAMES=64の予備動作も含まれるため別途加算不要)。
+// GUNWAGON: fireLimitは2〜3(ENEMY_FIRE_LIMIT_MIN/SPREAD[3]=2,2)なので、通常プレイ(至近距離で
+// 張り付かない)での発射完了は最悪でも 3×189=567フレーム。ここへ余裕を持たせ900フレーム(≒15秒)。
+// MOTHER: fireLimitは3〜4(同[8]=3,2)なので最悪 4×189=756フレーム。同様に余裕を持たせ1200フレーム(≒20秒)。
+// どちらも「通常プレイでは発射回数側が先に成立し、時間側は至近距離での張り付きに対してのみ
+// バックストップとして働く」ことを検証ステップで実測して確認する(このコメントは設計時点の
+// 見積りであり、実測結果と乖離があれば値を調整すること)。
+const ENEMY_LEAVE_TIME_LIMIT_BY_KIND = [0, 0, 0, 900, 0, 0, 0, 0, 1200, 0, 0]; // GUNWAGON=900f, MOTHER=1200f
 
 // 発射上限に達した個体が離脱する時にkind固有の後始末(移動状態の切替)を行う関数テーブル。
 // 何もしないkindはleaveNoneを使う(ENEMY_MOVE_BY_KINDと同じ並び順: SCATTER/DRIFTER/REAPER/GUNWAGON/WHEELSAW)。
@@ -196,6 +221,30 @@ const MOTHER_SWAY_STEP = 64; // 揺れの速さ
 const MOTHER_SETTLED_FLAG = 2; // e.flags bit1: 居座り位置へ到達済み(bit0は揺れ方向で使用中)
 const MOTHER_LEAVING_FLAG = 4; // e.flags bit2: 射出上限に到達し離脱シーケンスへ入った
 const MOTHER_CHILD_HP = 1; // 射出されたスキャッターの耐久。プール占有時間を短く保つためあえて低くする
+
+// --- ミラージュ専用: 自機の左右の動きを反転して真似る(docs/enemies.md #8) ---
+// updateEnemies()が毎フレーム算出するcurPlayerVX(前フレームとの差分)をそのまま符号反転して
+// e.vxへ使う。自機自身が「慣性なし・即応」(spec.md)な設計のため、離散的な速度変化をそのまま
+// 反転で追従させても自機と同じ体感の「即応」になり、カクつき/張り付きにはならない想定
+// (検証で気持ち悪ければ減衰を入れる。その場合は理由を報告する)。
+const MIRAGE_MIN_X = f(0);
+const MIRAGE_MAX_X = f(144); // 画面幅160-スプライト幅16。GUNWAGON/WHEELSAWと同じ可動域
+const MIRAGE_LEAVING_FLAG = 2; // e.flags bit1: 発射済みで離脱シーケンスへ入った(追従を止める)
+
+// --- チェイサー専用: 回り込んで自機の真横に並走し、成立後に横撃ち(docs/enemies.md #9) ---
+const CHASER_SIDE_OFFSET_PX = f(40); // 並走時の自機からの横オフセット。isPlayerTooCloseToFire
+// (中心距離x/yとも32px以内で発射禁止)のx方向32pxしきい値を確実に超える値を採る。
+// これにより「並走成立=撃てる」を成立させたまま、既存の近接発射抑止と衝突しない。
+const CHASER_MIN_X = f(0);
+const CHASER_MAX_X = f(144);
+const CHASER_VX_SEEK = f(1); // 横方向の回り込み速度(1px/frame)
+const CHASER_VY_MAX = 128; // 縦速度上限。docs/spec.md「敵縦速度はスクロールの1/2(128)以下」を厳守
+const CHASER_ALIGN_DY_PX = 12; // 自機とのy差がこの範囲内なら「並走帯」に入っているとみなす
+const CHASER_ALIGN_FRAMES_REQUIRED = 20; // 並走帯に連続でこのフレーム数留まったら並走成立
+const CHASER_ENTRY_SPACING = f(10); // 編隊内メンバーの初期x間隔(重なり回避)
+const CHASER_PAIRED_FLAG = 1; // e.flags bit0: 並走成立済み(観測可能な個体状態)
+const CHASER_LEAVING_FLAG = 2; // e.flags bit1: 発射済みで離脱シーケンスへ入った
+const CHASER_SIDE_RIGHT_FLAG = 4; // e.flags bit2: 出現側(BACK_RIGHT)基準で自機の右側へ回り込む個体
 
 // 出現口(GATES.*)ごとの編隊アンカーx範囲(px)。index は GATES の値と対応する
 // (FRONT_LEFT, FRONT_RIGHT, FRONT_CENTER, BACK_LEFT, BACK_RIGHT, BACK_AUTO, UNDERGROUND)。
@@ -545,6 +594,29 @@ function initMother(e, wave, memberIndex, gate) {
   e.anchorX = waveBaseX;
 }
 
+function initMirage(e, wave, memberIndex, gate) {
+  // 後左/後右のみ(docs/enemies.md #8)。縦列で入場する(SIDECARと同形)。
+  // 横方向はmoveMirageが毎フレーム自機の動きを反転して上書きする。
+  const { vySign, edgeY, edgeStep } = edgeParamsForGate(gate);
+  e.x = waveBaseX;
+  e.y = edgeY + edgeStep * memberIndex * COLUMN_Y_SPACING;
+  e.vx = 0;
+  e.vy = vySign * ENEMY_VY;
+}
+
+function initChaser(e, wave, memberIndex, gate) {
+  // 後左/後右のみ(docs/enemies.md #9)。出現した側を基準に、自機のその側面へ回り込む
+  // (BACK_LEFTから出た個体は自機の左側、BACK_RIGHTは右側へ寄る)。
+  const { vySign, edgeY, edgeStep } = edgeParamsForGate(gate);
+  e.x = waveBaseX + memberIndex * CHASER_ENTRY_SPACING;
+  e.y = edgeY + edgeStep * memberIndex * COLUMN_Y_SPACING;
+  e.vx = 0;
+  e.vy = vySign * ENEMY_VY; // 初期値。次フレームからmoveChaserが上書きする
+  if (gate === GATES.BACK_RIGHT) {
+    e.flags |= CHASER_SIDE_RIGHT_FLAG;
+  }
+}
+
 // kind→初期化関数のディスパッチテーブル(段階3の決定事項: if の羅列にしない)。
 const ENEMY_INIT_BY_KIND = [
   initScatter,
@@ -556,6 +628,8 @@ const ENEMY_INIT_BY_KIND = [
   initSandworm,
   initSidecar,
   initMother,
+  initMirage,
+  initChaser,
 ];
 
 function initEnemyFromWave(e, wave, memberIndex, gate) {
@@ -569,6 +643,8 @@ function initEnemyFromWave(e, wave, memberIndex, gate) {
   e.timer = 0;
   e.everOnscreen = false; // プール使い回し対策。スポーン直後は必ず未経験へ戻す
   e.fireCount = 0;
+  e.leaveTimer = 0; // プール使い回し対策。前回生存時の経過フレームを持ち越さない
+  e.leaving = false;
   // 発射しないkindはfireLimitを0のままにする(rndRangeでLFSRを無駄に1歩進めない。
   // ENEMY_CAN_FIRE_BY_KINDがfalseならどのみち攻撃パイプラインへ触れないため実害はないが、
   // 他のスポーン処理が使うLFSR系列をむやみにずらさない方を優先する)。
@@ -811,6 +887,66 @@ function moveMother(e) {
   e.x = e.anchorX + e.timer;
 }
 
+function moveMirage(e) {
+  if (e.flags & MIRAGE_LEAVING_FLAG) {
+    return; // 発射後は追従をやめる。e.vyは初期値のまま(上昇中)なので、そのまま素通りして抜ける
+  }
+  e.vx = -curPlayerVX; // 自機の左右の動きを反転して真似る
+  e.x += e.vx;
+  if (e.x < MIRAGE_MIN_X) {
+    e.x = MIRAGE_MIN_X;
+  } else if (e.x > MIRAGE_MAX_X) {
+    e.x = MIRAGE_MAX_X;
+  }
+}
+
+function moveChaser(e) {
+  if (e.flags & CHASER_LEAVING_FLAG) {
+    return; // 発射後はleaveChaserが設定したvx=0/vy=-ENEMY_VYのまま素通りして抜ける
+  }
+  const side = e.flags & CHASER_SIDE_RIGHT_FLAG ? 1 : -1;
+  let targetX = curPlayerX + side * CHASER_SIDE_OFFSET_PX;
+  if (targetX < CHASER_MIN_X) {
+    targetX = CHASER_MIN_X;
+  } else if (targetX > CHASER_MAX_X) {
+    targetX = CHASER_MAX_X;
+  }
+  if (e.x < targetX) {
+    e.x += CHASER_VX_SEEK;
+    if (e.x > targetX) {
+      e.x = targetX;
+    }
+  } else if (e.x > targetX) {
+    e.x -= CHASER_VX_SEEK;
+    if (e.x < targetX) {
+      e.x = targetX;
+    }
+  }
+
+  const dy = curPlayerY - e.y;
+  const ady = dy < 0 ? -dy : dy;
+  if (ady <= CHASER_ALIGN_DY_PX) {
+    // 並走帯に入っている。自機の縦速度に合わせる(±CHASER_VY_MAXでcap)。
+    let vy = curPlayerVY;
+    if (vy > CHASER_VY_MAX) {
+      vy = CHASER_VY_MAX;
+    } else if (vy < -CHASER_VY_MAX) {
+      vy = -CHASER_VY_MAX;
+    }
+    e.vy = vy;
+    e.timer += 1;
+    if (e.timer >= CHASER_ALIGN_FRAMES_REQUIRED && (e.flags & CHASER_PAIRED_FLAG) === 0) {
+      // 並走成立の瞬間。ドリフターの折り返しトリガと同じ手筋でatkTimerを予備動作の先頭へ
+      // 即座にセットし(通常の150±40フレーム周期を待たせない)、成立直後に横撃ちへつなげる。
+      e.flags |= CHASER_PAIRED_FLAG;
+      e.atkTimer = TELEGRAPH_SLOWDOWN_FRAMES + 1;
+    }
+  } else {
+    e.timer = 0; // 帯を外れたら連続フレームカウンタをリセット(成立後はflagが立ったままなので影響しない)
+    e.vy = dy < 0 ? -CHASER_VY_MAX : CHASER_VY_MAX;
+  }
+}
+
 // kind→毎フレーム移動関数のディスパッチテーブル(段階3の決定事項: if の羅列にしない)。
 // サンドワーム(KIND_SANDWORM)は潜行中updateOneEnemyの先頭で専用分岐(updateSandwormPre)へ
 // バイパスされるため、ここではmoveNoneを割り当てる(浮上後は共通パイプラインへ合流し、
@@ -825,6 +961,8 @@ const ENEMY_MOVE_BY_KIND = [
   moveNone,
   moveSidecar,
   moveMother,
+  moveMirage,
+  moveChaser,
 ];
 
 // --- 発射上限到達時の離脱トリガ(kind別)。ENEMY_MOVE_BY_KINDと同じ並び順。 ---
@@ -853,6 +991,16 @@ function leaveMother(e) {
   e.flags |= MOTHER_LEAVING_FLAG;
 }
 
+function leaveMirage(e) {
+  e.flags |= MIRAGE_LEAVING_FLAG;
+}
+
+function leaveChaser(e) {
+  e.flags |= CHASER_LEAVING_FLAG;
+  e.vx = 0;
+  e.vy = -ENEMY_VY; // 来た側(上)へ抜ける
+}
+
 const ENEMY_LEAVE_BY_KIND = [
   leaveNone,
   leaveDrifter,
@@ -863,7 +1011,16 @@ const ENEMY_LEAVE_BY_KIND = [
   leaveNone,
   leaveSidecar,
   leaveMother,
+  leaveMirage,
+  leaveChaser,
 ];
+
+// triggerLeave(e): 発射回数到達/時間切れどちらの経路からも呼ぶ共通の離脱トリガ。
+// e.leavingを立ててから(二重トリガー防止)kind固有の離脱動作(ENEMY_LEAVE_BY_KIND)へ委譲する。
+function triggerLeave(e) {
+  e.leaving = true;
+  ENEMY_LEAVE_BY_KIND[e.kind](e);
+}
 
 function updateOneEnemy(e) {
   // サンドワームの潜行中(SANDWORM_SUBMERGED_FLAG)は共通パイプライン(オフロード判定・vy積分・
@@ -879,6 +1036,11 @@ function updateOneEnemy(e) {
   if (e.flashTimer > 0) {
     e.flashTimer -= 1;
   }
+
+  // spawnからの経過フレーム(時間ベース離脱バックストップ用の汎用カウンタ)。
+  // サンドワーム潜行中はこの関数自体に到達しない(冒頭のバイパスで早期returnするため、
+  // その間はカウントされない=問題ない。ENEMY_LEAVE_TIME_LIMIT_BY_KINDを使わない種のため)。
+  e.leaveTimer += 1;
 
   ENEMY_MOVE_BY_KIND[e.kind](e);
 
@@ -951,21 +1113,31 @@ function updateOneEnemy(e) {
   if (curSpawnFrozen) {
     return;
   }
+  // 時間ベース離脱バックストップ(docs/spec.md「自機の可動範囲」節の注意書き参照)。
+  // 至近距離での近距離発射抑止により発射回数側の離脱条件が永久に成立しない個体を、
+  // 発射回数を待たずここで強制的に離脱させる。発射回数側の早期returnより先に判定することで、
+  // 「発射回数か経過時間の早い方で離脱」を素直に実現する(通常プレイでは発射回数側が先に
+  // 成立するため、ここは至近距離張り付き時のみ効くバックストップになる)。
+  if (e.fireLimit > 0 && !e.leaving && ENEMY_LEAVE_TIME_LIMIT_BY_KIND[e.kind] > 0 && e.leaveTimer >= ENEMY_LEAVE_TIME_LIMIT_BY_KIND[e.kind]) {
+    triggerLeave(e);
+    return;
+  }
   // 雑魚敵は一撃離脱: 発射上限(fireLimit)に達した個体は、以後この攻撃パイプラインへ一切触れない
   // (leaveXxx()が既にkind固有の離脱動作へ切り替え済み。ここで毎フレーム再トリガする必要はない)。
   if (e.fireLimit > 0 && e.fireCount >= e.fireLimit) {
     return;
   }
-  // 予備動作へ入る手前で、自機が近いあいだはカウントダウンごと止める。
+  // 予備動作へ入る手前で、自機が近いあいだ、または並走未成立(CHASER)のあいだはカウントダウンごと止める。
   // 減速帯へ入れてしまうと「撃てないのに這って遅い」敵になる(実測でこの状態が敵サンプルの
   // 46%を占めていた)。帯の外で止めておけば通常速度のまま近接でき、自機が離れてから
   // 改めて予備動作を踏む。
-  if (e.atkTimer > TELEGRAPH_SLOWDOWN_FRAMES || !isPlayerTooCloseToFire(e)) {
+  const fireBlocked = isPlayerTooCloseToFire(e) || ENEMY_FIRE_BLOCK_BY_KIND[e.kind](e);
+  if (e.atkTimer > TELEGRAPH_SLOWDOWN_FRAMES || !fireBlocked) {
     e.atkTimer -= 1;
   }
   if (e.atkTimer <= 0) {
-    if (isPlayerTooCloseToFire(e)) {
-      // 至近距離の回避不能弾を作らないため、攻撃をキャンセルせず待機させる。範囲内では絶対にspawnしない。
+    if (isPlayerTooCloseToFire(e) || ENEMY_FIRE_BLOCK_BY_KIND[e.kind](e)) {
+      // 至近距離の回避不能弾を作らないため、または並走未成立のため、攻撃をキャンセルせず待機させる。範囲内では絶対にspawnしない。
       // 待機位置を予備動作帯の「1つ外側」に置くのが要点。ここを1にすると待機中ずっと減速帯に
       // 居座り、自機が近いあいだ敵が這うように遅くなる(実測: 敵サンプルの46%がこの状態だった)。
       // 帯の外で待たせれば通常速度のまま近接でき、自機が離れたあとは改めて64フレームの
@@ -979,7 +1151,7 @@ function updateOneEnemy(e) {
       // 一撃離脱の上限に到達。まず減速状態(TELEGRAPH_SLOWDOWN_NUM)を解除してから
       // (でないと離脱中もずっと1/4速のまま這うことになる)、kind固有の離脱動作へ切り替える。
       e.atkTimer = TELEGRAPH_SLOWDOWN_FRAMES + 1;
-      ENEMY_LEAVE_BY_KIND[e.kind](e);
+      triggerLeave(e);
     } else {
       // ドリフターは折り返し(moveDrifter)がatkTimerを直接上書きして再トリガーするため、ここでの
       // 周期リセットは実質「折り返しが来るまでの保険値」になる。ガンワゴンはこの周期でそのまま撃ち続ける。
@@ -987,6 +1159,24 @@ function updateOneEnemy(e) {
     }
   }
 }
+
+function noFireBlock() {
+  return false;
+}
+
+function chaserFireBlocked(e) {
+  return (e.flags & CHASER_PAIRED_FLAG) === 0;
+}
+
+// kind→追加の発射禁止条件(段階3グループ3の決定事項)。既存のisPlayerTooCloseToFireと同じ
+// 「攻撃サイクル自体はキャンセルせず待機させる」扱いにするための拡張ポイント。
+// デフォルトはnoFireBlock(常にfalse=禁止条件なし)。CHASERのみ「並走成立前は撃たない」を実装する。
+const ENEMY_FIRE_BLOCK_BY_KIND = [
+  noFireBlock, noFireBlock, noFireBlock, noFireBlock, noFireBlock,
+  noFireBlock, noFireBlock, noFireBlock, noFireBlock,
+  noFireBlock, // MIRAGE
+  chaserFireBlocked, // CHASER
+];
 
 function isPlayerTooCloseToFire(e) {
   let dx = curPlayerX + SPRITE_CENTER_OFFSET - (e.x + SPRITE_CENTER_OFFSET);
@@ -1072,6 +1262,8 @@ function fireMotherScatter(e) {
   c.everOnscreen = false; // 通常spawnと同じく、共通パイプラインの初回判定に任せる
   c.fireCount = 0;
   c.fireLimit = 0;
+  c.leaveTimer = 0; // fireLimit=0(この個体は時間ベース離脱を使わない)なので実害はないが、
+  c.leaving = false; // プール使い回し時に前回生存分の値を持ち越さないよう念のため揃えておく。
   c.flashTimer = 0; // プール使い回し対策(initEnemyFromWaveと違い個別フィールドを手で設定するため明示する)
   c.x = e.x;
   c.y = e.y + f(8); // 後部ハッチ(下寄り)から出す見た目
@@ -1092,6 +1284,8 @@ const ENEMY_FIRE_ACTION_BY_KIND = [
   fireEnemyBullet,
   fireSidecarLob, // SIDECAR
   fireMotherScatter, // MOTHER
+  fireEnemyBullet, // MIRAGE
+  fireEnemyBullet, // CHASER
 ];
 
 // --- サンドワーム専用: 潜行(不可視・無敵・判定なし)→予告(砂煙)→浮上して放射3発 ---
@@ -1449,24 +1643,7 @@ function spawnOneDebris(x, y, vx, vy) {
   eff.radius = 0;
 }
 
-function spawnScorePop(x, y, value) {
-  const p = spawn(SCORE_POPS);
-  if (!p) {
-    return;
-  }
-  p.x = x;
-  p.y = y;
-  p.vx = 0;
-  p.vy = -64; // ゆっくり上に浮く(8.8固定小数点)
-  p.hp = 0;
-  p.flags = 0;
-  p.timer = 0;
-  p.kind = 0;
-  p.tile = 0;
-  p.value = value;
-}
-
-// damageEnemy(e, dmg): ダメージを与え、撃破時は爆発/破片/スコアポップを発生させ、
+// damageEnemy(e, dmg): ダメージを与え、撃破時は爆発/破片を発生させ、
 // game.js側で score に加算すべき値を返す（撃破しなければ0を返す）。
 export function damageEnemy(e, dmg) {
   // ホイールソー: 破壊不能(docs/enemies.md #13)。hp減算・爆発・スコア・被弾フラッシュを一切
@@ -1492,18 +1669,16 @@ export function damageEnemy(e, dmg) {
     spawnOneDebris(e.x, e.y, f(1), -f(1));
     let value = ENEMY_SCORE_VALUE;
     if (e.kind === KIND_REAPER && reaperTrackOnKill(e.formationId)) {
-      // 同一編隊5機を「抜けきる前に全滅」させた瞬間。全滅ボーナスを撃破スコアに合算する
-      // (専用のスコアポップは増やさず、この撃破の1ポップにボーナスを乗せて見せる)。
+      // 同一編隊5機を「抜けきる前に全滅」させた瞬間。全滅ボーナスを撃破スコアに合算する。
       value += REAPER_ALLKILL_BONUS;
     }
-    spawnScorePop(e.x, e.y, value);
     return value;
   }
   return 0;
 }
 
 // damageObstacle(o, dmg): 破壊不可(FENCE)は何もせず0を返す。破壊可はhpを減らし、
-// 破壊時は爆発+スコアポップを発生させ加算すべきスコアを返す。
+// 破壊時は爆発を発生させ加算すべきスコアを返す。
 export function damageObstacle(o, dmg) {
   if ((o.flags & 1) === 0) {
     return 0;
@@ -1512,7 +1687,6 @@ export function damageObstacle(o, dmg) {
   if (o.hp <= 0) {
     o.alive = false;
     spawnEnemyExplosion(o.x, o.y);
-    spawnScorePop(o.x, o.y, OBSTACLE_SCORE_VALUE);
     return OBSTACLE_SCORE_VALUE;
   }
   return 0;

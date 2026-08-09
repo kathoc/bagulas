@@ -17,7 +17,7 @@ import {
 import { isDown, isPressed, K, isTouch } from './input.js';
 import { pushMeta16, pushSprite, drawText, drawSolidRect, spriteBudgetLeft, isOffRoadAt } from './gfx.js';
 import { TILE16_PLAYER, TILE_SMOKE } from './tiles.js';
-import { PLAYER_BULLETS, ENEMIES, ENEMY_BULLETS, OBSTACLES, EFFECTS, SCORE_POPS, SMOKE, spawn, forEach, forEachFrom } from './entities.js';
+import { PLAYER_BULLETS, ENEMIES, ENEMY_BULLETS, OBSTACLES, EFFECTS, SMOKE, spawn, forEach, forEachFrom } from './entities.js';
 import { fire, updateBullets, WEAPON, WEAPON_NAMES } from './weapons.js';
 import {
   resetEnemies,
@@ -52,27 +52,38 @@ import {
 
 // 自機の可動範囲（画面px, 8.8化前の生値）。
 // x: スプライト幅16pxのため右端は 160-16=144 まで。
-// y: 下半分の走行レーンに制限（敵は上から出現させる想定のため自機はプレイエリア下側に固定）。
-//    上限は中央よりやや下の64、下限はスプライト高16pxを考慮した画面下端128。
+// y: 画面いっぱいに動ける(docs/spec.md「自機の可動範囲」)。Y_MIN=0/Y_MAX=128は
+//    スプライト16×16が画面内に収まる範囲。**プレイヤー操作では画面外へ出さない**。
+//    画面外へ出るのはステージ終了の演出(ボス撃破後に自動で上端から走り去る)だけで、
+//    その間は操作を受け付けない。
 //
-// Y_MIN を下げるときの注意(余裕は8pxしかない): ガンワゴンは画面上部(y=-16..24px)に
-// 居座り、撃った回数が上限に達して初めて離脱する。一方で敵は自機と中心距離が
-// x/yとも32px以内だと撃たない(近距離発射抑止)。ガンワゴンの中心yは最大32px、
-// 自機の中心yは最小 Y_MIN+8 = 72px なので、差は最小40px = 抑止閾値32pxより8px大きい。
-// Y_MIN を56未満にすると抑止が成立し、ガンワゴンが撃てない＝離脱できないまま
-// 画面に残り続ける。可動範囲を広げる場合はガンワゴン側に時間での退場も持たせること。
+// 近距離発射抑止(自機との中心距離がx/yとも32px以内だと撃たない)により、画面上部に居座る
+// GUNWAGON/MOTHER(および将来同様に設定する種)は自機が至近距離に居座ると発射回数ベースの
+// 離脱条件を永久に満たせなくなり得るが、これは enemies.js の
+// ENEMY_LEAVE_TIME_LIMIT_BY_KIND による時間ベース離脱バックストップで解消済み
+// (発射回数か経過時間の早い方で離脱する)。よってこのファイル側でY_MINを守る必要はない。
 const X_MIN = 0;
 const X_MAX = 144;
-const Y_MIN = 64;
+const Y_MIN = 0;
 const Y_MAX = 128;
 
 const PLAYER_SPEED = f(2); // 1フレームあたり2px。慣性なし・キー押下中のみ一定速度で移動する
 // オフロード時の速度係数 2/3 ≈ 0x00AB(171/256)。0x0155(341/256)は逆方向(4/3倍)なので使わない。
 const PLAYER_SPEED_OFFROAD = fmul(PLAYER_SPEED, 0x00ab); // 定数同士なのでモジュール初期化時に1回だけ計算
 
+// --- ステージ開始時の「画面下の外から登場」演出(docs/spec.md「ステージの出入り」) ---
+// ENTRY_START_Y: 登場開始y。画面高144pxに対し十分下(スプライトが完全に画面外)から始める。
+// Y_MAXとの差32pxはPLAYER_SPEED(2px/f)の16フレーム分に相当し、「一瞬で終わらない、しかし
+// 待たされもしない」せり上がりの長さとして採用(短すぎるとただの瞬間移動に見え、
+// 長すぎると「登場中も操作できる」利点を無敵時間の大半で使えなくなる)。
+const ENTRY_START_Y = 160;
+// ENTRY_RISE_SPEED: せり上がり速度。PLAYER_SPEED(2px/f)よりやや速い3px/fにして、
+// 入力移動と合成されても「せり上がっている」ことがはっきり分かるようにしつつ、
+// 32px差を約11フレームで詰めてテンポよく終える。
+const ENTRY_RISE_SPEED = f(3);
+
 const EFFECT_DURATION = 12; // エフェクト（爆発等）の表示フレーム数
 const EXPLOSION_TILE_SWAP_INTERVAL = 4; // 敵撃破爆発のtile差し替え間隔(フレーム)
-const SCORE_POP_DURATION = 30; // スコアポップの表示フレーム数
 
 const START_LIVES = 3;
 const PLAYER_INVULN_FRAMES = 180; // 被弾後(リスポーン後)の無敵フレーム数。3秒(180フレーム)
@@ -117,6 +128,7 @@ let loop = 0; // 全6面を1周するたびに+1
 let clearTimer = 0; // CLEAR表示の残フレーム
 
 let playerInvuln = 0; // 残り無敵フレーム
+let playerEntering = false; // ステージ開始時の「画面下から自動でせり上がる」演出中か(死亡復活時は使わない)
 let playerOffRoad = false; // 直近フレームでオフロード判定だったか（速度2/3・揺れ・煙に使用。毎フレーム再計算）
 let shotCooldown = 0; // オート連射のクールダウン残フレーム（5フレームで秒間約12発）
 
@@ -137,9 +149,10 @@ function isStagePlayable(idx) {
 
 function resetPlayerState() {
   playerX = f(72);
-  playerY = f(Y_MAX);
+  playerY = f(ENTRY_START_Y); // 画面下の外から登場(docs/spec.md「ステージの出入り」)
+  playerEntering = true;
   paused = false;
-  playerInvuln = 0;
+  playerInvuln = PLAYER_INVULN_FRAMES; // 無敵点滅で始まり180フレームで解除
   playerOffRoad = false;
   shotCooldown = 0;
   playerStun = 0;
@@ -238,14 +251,6 @@ function ageEffect(e) {
   }
 }
 
-function ageScorePop(p) {
-  p.timer += 1;
-  p.y += p.vy;
-  if (p.timer > SCORE_POP_DURATION) {
-    p.alive = false;
-  }
-}
-
 // オフロード煙: 毎フレーム下方向へ流し、寿命が尽きたら消す。
 function ageSmoke(s) {
   s.timer += 1;
@@ -293,8 +298,28 @@ function updatePlayerMove(scrollY) {
   if (isDown(K.DOWN)) {
     playerY += speed;
   }
+
+  // ステージ開始時の自動せり上がり(docs/spec.md「ステージの出入り」)。入力による移動の後に
+  // 上乗せするので、登場中も操作は効いたままになる(「登場中も操作できる」を満たす)。
+  // Y_MAXの位置まで上がってきたら通常の可動範囲へ合流し、以後はこの分岐自体を通らなくなる。
+  if (playerEntering) {
+    playerY -= ENTRY_RISE_SPEED;
+    if (playerY <= f(Y_MAX)) {
+      playerEntering = false;
+    }
+  }
+
   playerX = clamp(playerX, f(X_MIN), f(X_MAX));
-  playerY = clamp(playerY, f(Y_MIN), f(Y_MAX));
+  if (playerEntering) {
+    // 登場中は下側(まだ画面外にいる開始位置側)をY_MAXでクランプしない
+    // (開始yがY_MAXより大きいため、クランプするとせり上がりが初手で終わってしまう)。
+    // 上側だけ防御的にY_MINで止める(登場中に強くUPを入力し続けた場合の踏み越え対策)。
+    if (playerY < f(Y_MIN)) {
+      playerY = f(Y_MIN);
+    }
+  } else {
+    playerY = clamp(playerY, f(Y_MIN), f(Y_MAX));
+  }
 }
 
 // 自機の爆発エフェクトを1個確保する。enemies.jsのspawnEnemyExplosion()と同じ見た目(小→大→散の
@@ -335,6 +360,12 @@ function hurtPlayer(fromX, fromY) {
 
 // スクロール速度の状態機械。DYING: 線形減速→0で停止(lives<=0ならGAMEOVERへ、それ以外はリスポーン開始)。
 // RESPAWNING: 線形加速→SCROLL_SPEED_BASEに達したら通常状態(NONE)へ戻る。
+// playerEnteringをここで意図的に触らない: ステージ開始時のせり上がり演出はplayerInvuln=
+// PLAYER_INVULN_FRAMES(180)で始まり、演出自体は約11フレーム(ENTRY_START_Yからの32px差÷
+// ENTRY_RISE_SPEED)で終わる。無敵が切れる遥か前にplayerEnteringはfalseへ戻っているため、
+// 「登場演出中に被弾してhurtPlayerが呼ばれる」経路は存在しない(collidePlayerVsWorld等は
+// playerInvuln>0で無条件にスキップする)。よってbeginRespawn到達時点でplayerEnteringが
+// trueのままということは起こり得ず、defensiveリセットは不要と判断した。
 function beginRespawn() {
   deathState = DEATH.RESPAWNING;
   playerX = f(72);
@@ -717,7 +748,9 @@ function updateDebugHook() {
   hook.scrollRamp = scrollRamp; // 死亡/復活の権威値(offroad係数を含まない生のランプ)
   hook.deathState = deathState;
   hook.playerX = playerX;
+  hook.playerY = playerY; // 可動範囲(Y_MIN..Y_MAX)と登場演出の実測に使う(観測専用)
   hook.playerInvuln = playerInvuln;
+  hook.playerEntering = playerEntering;
   hook.playerStun = playerStun; // 障害物拘束の残フレーム(観測専用)
 }
 
@@ -802,7 +835,6 @@ export function updateGame(scrollY) {
   }
 
   forEach(EFFECTS, ageEffect);
-  forEach(SCORE_POPS, ageScorePop);
   forEach(SMOKE, ageSmoke);
 }
 
@@ -827,12 +859,6 @@ function drawEffect(e) {
   if (drawn) {
     e.lastDrawnFrame = distance;
   }
-}
-
-// スコアポップはdrawText(=raster().blitGlyph直書き)でスプライト枠を消費しないため、
-// 優先順位付けの対象外(常に描かれる)。
-function drawScorePop(p) {
-  drawText(toPx(p.x), toPx(p.y), '' + p.value);
 }
 
 // 優先度6(敵弾・敵・障害物・エフェクトより下、自弾より上)。
@@ -891,7 +917,6 @@ export function drawGame() {
       drawBoss(); // 優先度3相当(ボスは敵の一種として扱う)
     }
     forEachFrom(EFFECTS, distance, drawEffect); // 優先度5
-    forEachFrom(SCORE_POPS, distance, drawScorePop); // スプライト枠を消費しないため優先順位の対象外
 
     // オフロード時の煙(8x8、自機の左下・右下から下方向へ流れて消える)。優先度6。
     if (gameState === STATE.PLAY) {

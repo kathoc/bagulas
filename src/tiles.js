@@ -26,6 +26,8 @@ import { TILE_ENEMY_HOPPER } from '../art/generated/enemy_hopper.js';
 import { TILE_ENEMY_SANDWORM } from '../art/generated/enemy_sandworm.js';
 import { TILE_ENEMY_SIDECAR } from '../art/generated/enemy_sidecar.js';
 import { TILE_ENEMY_MOTHER } from '../art/generated/enemy_mother.js';
+import { TILE_ENEMY_MIRAGE } from '../art/generated/enemy_mirage.js';
+import { TILE_ENEMY_CHASER } from '../art/generated/enemy_chaser.js';
 
 function emptyTile(fill) {
   const t = new Uint8Array(64);
@@ -372,6 +374,16 @@ function buildEnemyMother() {
   return quadFrom16(TILE_ENEMY_MOTHER);
 }
 
+// 敵: ミラージュ（実素材: enemy_mirage.png。段階3グループ3で追加）
+function buildEnemyMirage() {
+  return quadFrom16(TILE_ENEMY_MIRAGE);
+}
+
+// 敵: チェイサー（実素材: enemy_chaser.png。段階3グループ3で追加）
+function buildEnemyChaser() {
+  return quadFrom16(TILE_ENEMY_CHASER);
+}
+
 export function buildTiles() {
   const tiles = [];
   tiles.push(tileEmpty()); // 0
@@ -415,6 +427,9 @@ export function buildTiles() {
     ['TILE16_ENEMY_SANDWORM', buildEnemySandworm()],
     ['TILE16_ENEMY_SIDECAR', buildEnemySidecar()],
     ['TILE16_ENEMY_MOTHER', buildEnemyMother()],
+    // 段階3グループ3: 敵2種（ミラージュ/チェイサー）
+    ['TILE16_ENEMY_MIRAGE', buildEnemyMirage()],
+    ['TILE16_ENEMY_CHASER', buildEnemyChaser()],
   ];
   const meta16Ids = {};
   for (const [name, quad] of META16_DEFS) {
@@ -452,6 +467,8 @@ const META16_ORDER = [
   'TILE16_ENEMY_SANDWORM',
   'TILE16_ENEMY_SIDECAR',
   'TILE16_ENEMY_MOTHER',
+  'TILE16_ENEMY_MIRAGE',
+  'TILE16_ENEMY_CHASER',
 ];
 const NUM_FIXED_TILES = 12; // 道路系7枚(0-6) + 煙(7) + 自弾3種(8-10) + 敵弾(11)
 const META16_BASE = NUM_FIXED_TILES; // 固定タイル12枚の後ろ（フォントはタイルアトラスに含まれない）
@@ -482,3 +499,5 @@ export const TILE16_ENEMY_HOPPER = META16_BASE + META16_ORDER.indexOf('TILE16_EN
 export const TILE16_ENEMY_SANDWORM = META16_BASE + META16_ORDER.indexOf('TILE16_ENEMY_SANDWORM') * 4;
 export const TILE16_ENEMY_SIDECAR = META16_BASE + META16_ORDER.indexOf('TILE16_ENEMY_SIDECAR') * 4;
 export const TILE16_ENEMY_MOTHER = META16_BASE + META16_ORDER.indexOf('TILE16_ENEMY_MOTHER') * 4;
+export const TILE16_ENEMY_MIRAGE = META16_BASE + META16_ORDER.indexOf('TILE16_ENEMY_MIRAGE') * 4;
+export const TILE16_ENEMY_CHASER = META16_BASE + META16_ORDER.indexOf('TILE16_ENEMY_CHASER') * 4;
