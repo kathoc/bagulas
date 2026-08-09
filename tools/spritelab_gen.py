@@ -397,14 +397,15 @@ def export_tile_js(indices_by_const, width, height, filename, out_dir=GENERATED_
 
 
 # 16x16に落とす通常アセット。(raw名, 出力ファイル名(=定数名の元), 定数名, target, max_idx)
-# 障害物(obstacle_*)は当たり判定のある危険物なので index3 を許容する。
+# 障害物(obstacle_*)は敵ではなく、接触しても死なない(引っ掛かって拘束されるだけ)ので
+# 「濃度4(index3) = 当たると死ぬ」の約束から外れる。よってindex3は使わずmax_idx=2に量子化する。
 SPRITE_CONVERT_SPECS = [
     ("player_buggy", "player_buggy", "TILE_PLAYER_BUGGY", 16, 3),
     ("enemy_bike", "enemy_bike", "TILE_ENEMY_BIKE", 16, 3),
     ("enemy_car", "enemy_car", "TILE_ENEMY_CAR", 16, 3),
-    ("obstacle_rock", "obstacle_rock", "TILE_OBSTACLE_ROCK", 16, 3),
-    ("obstacle_fence", "obstacle_fence", "TILE_OBSTACLE_FENCE", 16, 3),
-    ("obstacle_cactus", "obstacle_cactus", "TILE_OBSTACLE_CACTUS", 16, 3),
+    ("obstacle_rock", "obstacle_rock", "TILE_OBSTACLE_ROCK", 16, 2),
+    ("obstacle_fence", "obstacle_fence", "TILE_OBSTACLE_FENCE", 16, 2),
+    ("obstacle_cactus", "obstacle_cactus", "TILE_OBSTACLE_CACTUS", 16, 2),
     # docs/enemies.md v2 の敵16種。敵は「当たると死ぬ側」なので最暗色 index3 を許容する
     # (濃度4を持つ = 当たると死ぬ、という読み替えの約束)。
     ("enemy_scatter", "enemy_scatter", "TILE_ENEMY_SCATTER", 16, 3),

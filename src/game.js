@@ -111,6 +111,11 @@ let playerInvuln = 0; // 残り無敵フレーム
 let playerOffRoad = false; // 直近フレームでオフロード判定だったか（速度2/3・揺れ・煙に使用。毎フレーム再計算）
 let shotCooldown = 0; // オート連射のクールダウン残フレーム（5フレームで秒間約12発）
 
+// 障害物に接触した際の拘束(スタン)。死亡/無敵とは独立した状態として持つ。
+// 拘束中は移動キーを受け付けない(射撃・スクロールは通常どおり)。パレット反転で見た目に表す。
+let playerStun = 0; // 残り拘束フレーム
+const OBSTACLE_STUN_FRAMES = 30; // 0.5秒(30フレーム)
+
 // 自機死亡と復活の状態機械。DYING中は自機を描かず入力も受け付けない。
 // RESPAWNING中はスクロールが加速で戻りつつ、自機は無敵点滅で操作可能。
 let deathState = DEATH.NONE;
@@ -128,6 +133,7 @@ function resetPlayerState() {
   playerInvuln = 0;
   playerOffRoad = false;
   shotCooldown = 0;
+  playerStun = 0;
   deathState = DEATH.NONE;
   scrollRamp = SCROLL_SPEED_BASE;
 }
@@ -247,6 +253,9 @@ function updatePlayerOffRoad(scrollY) {
 
 function updatePlayerMove(scrollY) {
   updatePlayerOffRoad(scrollY);
+  if (playerStun > 0) {
+    return; // 障害物への接触による拘束中は移動キーを受け付けない(射撃は別途継続する)
+  }
   const speed = playerOffRoad ? PLAYER_SPEED_OFFROAD : PLAYER_SPEED;
   if (isDown(K.LEFT)) {
     playerX -= speed;
@@ -457,7 +466,8 @@ function collideExplosionsVsTargets() {
   forEach(EFFECTS, checkExplosionEffect);
 }
 
-// 敵/敵弾/障害物 × 自機。自機の無敵タイマー中は判定をスキップする。
+// 敵/敵弾 × 自機。自機の無敵タイマー中は判定をスキップする。
+// (障害物×自機は別扱い。checkObstacleVsPlayer参照 — ミスにはせず拘束(スタン)を与えるだけ)
 function checkEnemyVsPlayer(e) {
   if (playerInvuln > 0 || !e.alive) {
     return;
@@ -498,6 +508,9 @@ function checkEnemyBulletVsPlayer(b) {
   }
 }
 
+// 障害物は敵ではない(docs/enemies.md)。接触してもミスにはせず、30フレームの拘束(移動不可・
+// 射撃可・スクロールは止めない・スコアなし)を与えるだけ。既にスタン中なら再ヒットしても
+// 延長しない(接触し続けている間タイマーが更新され続けて解けなくなるのを防ぐ)。
 function checkObstacleVsPlayer(o) {
   if (playerInvuln > 0 || !o.alive) {
     return;
@@ -513,8 +526,8 @@ function checkObstacleVsPlayer(o) {
     ob.hw,
     ob.hh
   );
-  if (hit) {
-    hurtPlayer(o.x, o.y);
+  if (hit && playerStun <= 0) {
+    playerStun = OBSTACLE_STUN_FRAMES;
   }
 }
 
@@ -614,6 +627,9 @@ function updatePlayerCommon(scrollY) {
   if (playerInvuln > 0) {
     playerInvuln -= 1;
   }
+  if (playerStun > 0) {
+    playerStun -= 1;
+  }
 
   // 武器サイクル: X/K のトリガのみ（押しっぱなし連射にはしない）
   if (isPressed(K.B)) {
@@ -667,6 +683,9 @@ function updateDebugHook() {
   hook.scrollSpeed = getScrollSpeed(); // 実際にmain.jsのループが消費する値(offroad係数込み)
   hook.scrollRamp = scrollRamp; // 死亡/復活の権威値(offroad係数を含まない生のランプ)
   hook.deathState = deathState;
+  hook.playerX = playerX;
+  hook.playerInvuln = playerInvuln;
+  hook.playerStun = playerStun; // 障害物拘束の残フレーム(観測専用)
 }
 
 export function updateGame(scrollY) {
@@ -820,8 +839,9 @@ export function drawGame() {
     // SHAKE_PERIOD_SHIFTで周期を伸ばし(distanceのbit0ではなくbit3)、毎フレーム反転する激しい
     // 揺れ(30Hz)を控えめな周期(8フレームごと=約約4Hz)に落とす。振幅1pxは維持。
     const shakeY = playerOffRoad ? (((distance >> SHAKE_PERIOD_SHIFT) & 1) ? -1 : 1) : 0;
+    // 障害物拘束中はパレット反転で「動けない」ことを見た目に出す(新しい描画インタフェースは足さない)。
     if (showShip && !blinkSkip) {
-      pushMeta16(toPx(playerX), toPx(playerY) + shakeY, TILE16_PLAYER, 0, false);
+      pushMeta16(toPx(playerX), toPx(playerY) + shakeY, TILE16_PLAYER, 0, playerStun > 0);
     }
 
     // スプライト超過時のちらつき対応(docs/spec.md「スプライト超過の扱い」)。
