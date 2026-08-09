@@ -49,6 +49,8 @@ export const ENEMIES = makePool(20, (s) => {
   s.atkTimer = 0;
   s.formationId = 0;
   s.anchorX = 0; // SNAKE編隊の振動中心x（8.8固定小数点）。vxの流用をやめて専用化。
+  s.anchorY = 0; // 振り付けの停止位置y（8.8固定小数点）。個体ごとにずらす。
+  s.localFrame = 0; // 振り付け用の「自分の時計」。負の間はまだ出発していない（1体ごとの時間差）。
   s.flashTimer = 0; // 被弾白フラッシュの残フレーム数。flags上位ビットの流用をやめて専用化。
   s.offRoad = false;
   s.everOnscreen = false; // 一度でも画面内に入ったことがあるか。spawn待機位置での誤消滅を防ぐため必須。

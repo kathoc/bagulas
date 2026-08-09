@@ -275,8 +275,23 @@ const SNAKE_AMPLITUDE = f(40); // 蛇行の振れ幅。anchorXから±40pxで大
 // --- スキャッター専用: V字で広がった側へそのまま横断を続ける(巡航=滑走) ---
 const SCATTER_SWEEP_VX = 112; // 広がった向きへの横断速度。ENEMY_VY(96)と同オーダー
 
-// --- ドリフター専用: 縦列→蛇行の切替しきい値 ---
-const DRIFTER_SNAKE_START_Y = f(72); // 画面高144pxの半分あたり(目安どおり)を超えたら蛇行に切り替える
+// --- ドリフター専用: 振り付け(docs/enemies.md「動きは振り付けで定義する」) ---
+// フェーズ列: 進入60f → 静止30f → 発射 → 静止30f → 離脱(逆側の斜め上へV字)。
+// 「編隊をひとかたまりで動かさない」ため、各機は自分の時計(e.localFrame)で同じ列を踏む。
+// 開始をDRIFTER_STAGGERずつ遅らせ、停止位置も進行方向に沿ってずらすので、
+// 結果として斜線に流れて見える(フォーメーションを作りにいくのではない)。
+const DRIFTER_ENTRY_FRAMES = 60; // 1.0秒。スポーン地点から停止位置まで
+const DRIFTER_STILL1_FRAMES = 30; // 0.5秒。撃ち込みどころ兼、発射の予告
+const DRIFTER_STILL2_FRAMES = 30; // 0.5秒。発射後にもう一度止まる
+const DRIFTER_STAGGER = 11; // 1体ごとの開始遅れ(目安8〜14の中央)
+const DRIFTER_TARGET_Y = f(64); // 停止位置の基準y(画面中央あたり)
+const DRIFTER_TARGET_Y_STEP = f(14); // 後続ほど手前で止まる(進行方向に沿ったずらし)
+const DRIFTER_TARGET_X_STEP = f(10); // 停止位置を横にもずらし、斜線に並ばせる
+const DRIFTER_EXIT_VY = -96; // 離脱: 上へ(進入と逆向き)。大きさはENEMY_VYと同じ
+const DRIFTER_EXIT_VX = 96; // 離脱: 進入した側とは逆の横方向へ
+// 発射・静止の各フェーズ境界(自分の時計での通過フレーム)
+const DRIFTER_FIRE_FRAME = DRIFTER_ENTRY_FRAMES + DRIFTER_STILL1_FRAMES;
+const DRIFTER_EXIT_FRAME = DRIFTER_FIRE_FRAME + DRIFTER_STILL2_FRAMES;
 const DRIFTER_TRANSITIONED_FLAG = 2; // e.flags bit1: 蛇行フェーズへ切替済み
 const DRIFTER_LEAVING_FLAG = 4; // e.flags bit2: 発射上限(1回)に到達し離脱シーケンスへ入った
 // 離脱(八の字): 蛇行の振動を止めず、振動中心(anchorX)だけを個体の離脱方向へ毎フレーム動かす。
@@ -647,14 +662,28 @@ function initScatter(e, wave, memberIndex, gate) {
 }
 
 function initDrifter(e, wave, memberIndex, gate) {
-  // 元KIND_COLUMN。縦列で降下し、画面中程(DRIFTER_SNAKE_START_Y)を超えたら蛇行フェーズへ切り替える
-  // (切替はupdateOneEnemy側で毎フレーム判定する。ここでは縦列フェーズの初期状態だけを作る)。
-  const { vySign, edgeY, edgeStep } = edgeParamsForGate(gate);
+  // 振り付け方式。全機が同じ場所から出て同じ道を通り、違うのは「開始時刻」と「停止位置」だけ。
+  const { edgeY } = edgeParamsForGate(gate);
   e.x = waveBaseX;
-  e.y = edgeY + edgeStep * memberIndex * COLUMN_Y_SPACING;
-  e.anchorX = waveBaseX; // 蛇行フェーズに入った時点のxで上書きする(初期値は保険)
-  e.vx = 0;
-  e.vy = vySign * ENEMY_VY;
+  e.y = edgeY;
+  // 自分の時計。負の間はまだ出発していない(スポーン地点は画面外なので重なっていても見えない)。
+  e.localFrame = -memberIndex * DRIFTER_STAGGER;
+  // 停止位置: 後続ほど手前(y小)・横にずらす → 流れた結果として斜線に並ぶ。
+  e.anchorX = waveBaseX + (gate === GATES.FRONT_LEFT ? 1 : -1) * memberIndex * DRIFTER_TARGET_X_STEP;
+  e.anchorY = DRIFTER_TARGET_Y - memberIndex * DRIFTER_TARGET_Y_STEP;
+  // 進入は「60フレームちょうどで停止位置へ着く」等速。除算は初期化時の1回だけ(整数演算)。
+  e.vx = ((e.anchorX - e.x) / DRIFTER_ENTRY_FRAMES) | 0;
+  e.vy = ((e.anchorY - e.y) / DRIFTER_ENTRY_FRAMES) | 0;
+  // 離脱は進入した側と逆の斜め上へ。左右の出現口は「逆側」で決まる。
+  // 正面出現はどちらへ抜けても逆側にならないので、ここだけ個体ごとにLFSRで散らす
+  // (docs/enemies.md「乱数で揺らすのは出現位置と離脱の左右だけ」)。
+  if (gate === GATES.FRONT_LEFT) {
+    e.flags = LEAVE_SIDE_RIGHT_FLAG;
+  } else if (gate === GATES.FRONT_RIGHT) {
+    e.flags = 0;
+  } else {
+    e.flags = rndRange(2) === 1 ? LEAVE_SIDE_RIGHT_FLAG : 0;
+  }
 }
 
 function initReaper(e, wave, memberIndex, gate) {
@@ -880,49 +909,53 @@ function moveScatter(e) {
 }
 
 function moveDrifter(e) {
-  const leaving = (e.flags & DRIFTER_LEAVING_FLAG) !== 0;
-  if (!leaving && (e.flags & DRIFTER_TRANSITIONED_FLAG) === 0) {
-    // 縦列フェーズ: xは動かさない(vx=0のまま)。中程を超えたら蛇行フェーズへ切り替える。
-    if (e.y >= DRIFTER_SNAKE_START_Y) {
-      e.flags |= DRIFTER_TRANSITIONED_FLAG;
-      e.anchorX = e.x; // 切替時点のxを振動中心にする
-      e.timer = 0;
+  // 振り付け(docs/enemies.md)。自分の時計だけを見て、時間で区切られたフェーズ列を踏む。
+  // 進入60f → 静止30f → 発射 → 静止30f → 離脱(逆側の斜め上へV字)。
+  // 縦方向も含めてこの関数で位置を決めるため、共通のvy積分には任せない
+  // (updateOneEnemyがvyを積むので、静止フェーズではvx/vyを0にして「完全に止める」)。
+  e.localFrame += 1;
+  const t = e.localFrame;
+  if (t <= 0) {
+    // まだ出発していない。スポーン地点で待つ(画面外なので見えない)。
+    e.vx = 0;
+    e.vy = 0;
+    return;
+  }
+  if (t <= DRIFTER_ENTRY_FRAMES) {
+    // 進入中。yは共通パイプラインがvyを積むので、ここではxだけ動かす。
+    e.x += e.vx;
+    return;
+  }
+  if (t === DRIFTER_ENTRY_FRAMES + 1) {
+    // 停止位置へ吸着させてから止まる(除算の丸め誤差を残さない)。静止は「遅くする」ではなく「止める」。
+    e.x = e.anchorX;
+    e.y = e.anchorY;
+    e.vx = 0;
+    e.vy = 0;
+    return;
+  }
+  if (t < DRIFTER_FIRE_FRAME) {
+    return; // 静止1(予備動作)。vx=vy=0のまま完全に止まっている
+  }
+  if (t === DRIFTER_FIRE_FRAME) {
+    // 発射は1撃。近距離では撃たない規則は維持する(撃たない場合も振り付けは止めない)。
+    if (!isPlayerTooCloseToFire(e)) {
+      fireEnemyBullet(e);
+      e.fireCount += 1;
     }
     return;
   }
-  // 離脱(八の字): 蛇行の振動は止めず、振動中心(anchorX)だけを個体の離脱方向へ毎フレーム動かす。
-  // 振動と中心移動が重なって交差する軌跡になり、最終的に片側(または下)へ抜ける。
-  if (leaving) {
-    const sign = e.flags & LEAVE_SIDE_RIGHT_FLAG ? 1 : -1;
-    e.anchorX += sign * DRIFTER_LEAVE_ANCHOR_STEP;
+  if (t < DRIFTER_EXIT_FRAME) {
+    return; // 静止2
   }
-  // 蛇行フェーズ(元KIND_SNAKEのロジックを流用)。折り返し(flipped)のたびに1回だけ
-  // atkTimerを予備動作の先頭(TELEGRAPH_SLOWDOWN_FRAMES+1)へセットし、既存の減速→フラッシュ→発射
-  // パイプラインへ乗せる(多重発火は起きない: flags&1が変化した回のみflippedがtrueになるため)。
-  let step = SNAKE_STEP;
-  if (e.atkTimer <= TELEGRAPH_SLOWDOWN_FRAMES) {
-    step = fmul(step, TELEGRAPH_SLOWDOWN_NUM);
+  if (t === DRIFTER_EXIT_FRAME) {
+    // 離脱: 進入した側とは逆の斜め上へ。降りてきた軌跡と合わせてV字になる。
+    e.vy = DRIFTER_EXIT_VY;
+    e.vx = e.flags & LEAVE_SIDE_RIGHT_FLAG ? DRIFTER_EXIT_VX : -DRIFTER_EXIT_VX;
+    triggerLeave(e);
+    return;
   }
-  const dir = e.flags & 1;
-  let flipped = false;
-  if (dir === 0) {
-    e.timer += step;
-    if (e.timer >= SNAKE_AMPLITUDE) {
-      e.flags |= 1;
-      flipped = true;
-    }
-  } else {
-    e.timer -= step;
-    if (e.timer <= -SNAKE_AMPLITUDE) {
-      e.flags &= ~1;
-      flipped = true;
-    }
-  }
-  e.x = e.anchorX + e.timer;
-  if (flipped && !leaving) {
-    // 離脱中はもう撃たないので、折り返しでのatkTimer再トリガはスキップする(二重発火防止)。
-    e.atkTimer = TELEGRAPH_SLOWDOWN_FRAMES + 1;
-  }
+  e.x += e.vx; // 離脱中
 }
 
 function moveReaper(e) {
