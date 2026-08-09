@@ -312,9 +312,11 @@ const DRIFTER_STAGGER = 11; // 発生時刻のずらし(1体ごと)
 // 編隊として散って見せるにはずれていなければならない(通る座標を揃えると1本の列にしかならない)。
 const DRIFTER_SPAWN_X_STEP = f(18);
 const DRIFTER_SPAWN_Y_STEP = f(10); // 縦にもずらす。数フレームの時間差と合わせて散らす
-// 縦: 初速VY0から36フレームで0まで落とす。降下量は平均速度×時間 = VY0/2*36 ≒ 56px。
-const DRIFTER_VY0 = 796; // 8.8固定小数点(約3.1px/frame)。進入は「速く入って止まる」拍
-const DRIFTER_AY = 22; // 毎フレームの減速量(796/36 ≒ 22)。離脱では同じ量で上向きへ増速する
+// 縦: 初速VY0から36フレームで0まで落とす。降下量は平均速度×時間 = VY0*36/512 ≒ 86px。
+// スポーンy=-16から止まるのはy≒70で、仕様どおり「画面中央あたり」になる。
+// 1223 - 34*36 = -1 ≒ 0 なので、36フレーム目でちょうど頂点(速度0)に着く。
+const DRIFTER_VY0 = 1223; // 8.8固定小数点(約4.8px/frame)。進入は「速く入って止まる」拍
+const DRIFTER_AY = 34; // 毎フレームの減速量(1223/36 ≒ 34)。離脱では同じ量で上向きへ増速する
 // 横: 進入・離脱を通して一定。登場位置の反対側へ向かう向きだけを出現口で決める。
 const DRIFTER_VX = 284; // 約1.1px/frame。72フレーム(進入+離脱)で約80px横断する
 const DRIFTER_TRANSITIONED_FLAG = 2; // e.flags bit1: 蛇行フェーズへ切替済み
@@ -426,6 +428,17 @@ const GATE_IS_BACK = [0, 0, 0, 1, 1, 0, 0];
 
 const WAVE_GAP_MIN = 90; // ウェーブ間の空き下限(フレーム)
 const WAVE_GAP_SPREAD = 61; // rndRange(61)で0..60を足し、90..150の空きにする
+// さらに0.5〜1.5秒(30〜90フレーム)を上乗せする。合計120〜240フレーム(2.0〜4.0秒)。
+// 乱数は「どのウェーブをいつ出すか」の選択なので規則に反しない(禁じているのは個体の軌道・速度を揺らすこと)。
+const WAVE_GAP_EXTRA_MIN = 30;
+const WAVE_GAP_EXTRA_SPREAD = 61; // rndRange(61)で0..60を足し、30..90の上乗せにする
+
+// ウェーブ間の空きを1か所で決める(基本の空き + 上乗せ)。呼び出し側で式を散らさない。
+function nextWaveGap() {
+  return (
+    WAVE_GAP_MIN + rndRange(WAVE_GAP_SPREAD) + WAVE_GAP_EXTRA_MIN + rndRange(WAVE_GAP_EXTRA_SPREAD)
+  );
+}
 const SCREEN_CENTER_X = f(80); // 自機の左右寄りを判定する基準(画面幅160の中央)
 
 // 発射間隔の基本値(フレーム)。予備動作(TELEGRAPH_SLOWDOWN_FRAMES=64)より十分長く取る。
@@ -899,7 +912,7 @@ function spawnOverrideWave() {
     waveMemberIndex += 1;
   }
   waveMemberIndex = 0;
-  waveGapTimer = WAVE_GAP_MIN + rndRange(WAVE_GAP_SPREAD);
+  waveGapTimer = nextWaveGap();
 }
 
 function spawnPendingWave() {
@@ -942,7 +955,7 @@ function spawnPendingWave() {
     // wave丸ごとスポーンし終えたので次のwaveへ。次wave開始前に90〜150フレームの空きを置く
     waveCursor += 1;
     waveMemberIndex = 0;
-    waveGapTimer = WAVE_GAP_MIN + rndRange(WAVE_GAP_SPREAD);
+    waveGapTimer = nextWaveGap();
   }
 }
 
