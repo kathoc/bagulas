@@ -22,7 +22,12 @@ const logText = readFileSync(LOG, 'utf8');
 // 区切り文字は本文に現れないものを選ぶ
 const SEP = '';
 const REC = '';
-const raw = git(`log --reverse --pretty=format:"%h${SEP}%ad${SEP}%s${SEP}%b${REC}" --date=format:"%m-%d %H:%M"`);
+// docs/devlog/ だけを触ったコミット(=このスクリプトの同期コミット等)は記録しない。
+// 記録そのものについての記録がログに積もるのを避ける。
+const raw = git(
+  `log --reverse --pretty=format:"%h${SEP}%ad${SEP}%s${SEP}%b${REC}" --date=format:"%m-%d %H:%M"` +
+    ` -- . ":(exclude)docs/devlog"`
+);
 
 // 古い順に並べ、LOG.md に載っている最後のコミットを見つけ、それ以降だけを追記する。
 // (単純な「未記載なら追記」だと、手書きした区間より前のコミットが末尾に付いて時系列が壊れる)
