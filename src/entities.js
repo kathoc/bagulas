@@ -39,16 +39,21 @@ export const PLAYER_BULLETS = makePool(2, (s) => {
   s.hitCooldown = 0;
 });
 
-// ENEMIES: 敵プール（最大12）。src/enemies.js（Step3）が生成・更新する。
-// 追加フィールド: atkTimer=発射予備動作までの残フレーム, formationId=編隊識別用,
-// anchorX=SNAKE編隊の振動中心x（8.8固定小数点）, flashTimer=被弾白フラッシュの残フレーム数,
-// offRoad=直近フレームでオフロード判定だったか（速度2/3・描画シェイクに使用。毎フレーム再計算）。
-export const ENEMIES = makePool(12, (s) => {
+// ENEMIES: 敵プール（最大20）。src/enemies.js（段階3: 敵5種実装）が生成・更新する。
+// 段階3でプールサイズを12→20へ拡張した(採用理由はsrc/enemies.jsの実測コメント参照)。
+// ガンワゴン(720フレーム居座り+入退場)やホイールソー(低速降下)のように長時間生存する編隊が
+// 増えたため、12のままだと後続ウェーブがspawn()失敗で長時間ブロックされ、5種すべてが
+// 実プレイ時間内に出現しない事態が実測で確認された。40スプライト上限は変えない
+// (ちらつき機構forEachFromが既にあるため、プールを増やしても表示上限は超えない)。
+export const ENEMIES = makePool(20, (s) => {
   s.atkTimer = 0;
   s.formationId = 0;
   s.anchorX = 0; // SNAKE編隊の振動中心x（8.8固定小数点）。vxの流用をやめて専用化。
   s.flashTimer = 0; // 被弾白フラッシュの残フレーム数。flags上位ビットの流用をやめて専用化。
   s.offRoad = false;
+  s.everOnscreen = false; // 一度でも画面内に入ったことがあるか。spawn待機位置での誤消滅を防ぐため必須。
+  s.fireCount = 0; // これまでに発射した回数(一撃離脱の判定に使う)。
+  s.fireLimit = 0; // この個体が離脱するまでに撃てる回数。kind別にspawn時決定(0=このフィールド未使用)。
 });
 
 // ENEMY_BULLETS: 敵弾プール（最大8）。src/enemies.js（Step3）が生成・更新する。

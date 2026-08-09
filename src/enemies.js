@@ -23,22 +23,70 @@ import {
   SAFE_ONROAD_RIGHT_PX,
 } from './gfx.js';
 import {
-  TILE16_ENEMY_A,
-  TILE16_ENEMY_B,
   TILE16_ROCK,
   TILE16_FENCE,
   TILE16_CACTUS,
   TILE16_EXPLOSION_0,
   TILE16_EXPLOSION_1,
   TILE16_EXPLOSION_2,
+  TILE16_ENEMY_SCATTER,
+  TILE16_ENEMY_DRIFTER,
+  TILE16_ENEMY_REAPER,
+  TILE16_ENEMY_GUNWAGON,
+  TILE16_ENEMY_WHEELSAW,
   TILE_BULLET_ENEMY,
 } from './tiles.js';
 import { STAGES, FORMATIONS, OBSTACLE_KINDS, GATES, applyLoop } from './stages.js';
 
-// 敵種別（ENEMIES.kind に格納する内部enum。0=V, 1=COLUMN, 2=SNAKE）
-const KIND_V = 0;
-const KIND_COLUMN = 1;
-const KIND_SNAKE = 2;
+// 敵種別（ENEMIES.kind に格納する内部enum）。段階3で5種を実装。
+// 残り11種を後で追加する前提で、以降は「kind→関数」のテーブル(ENEMY_INIT_BY_KIND/ENEMY_MOVE_BY_KIND/
+// ENEMY_CAN_FIRE_BY_KIND)でディスパッチし、if の羅列にしない。
+const KIND_SCATTER = 0;
+const KIND_DRIFTER = 1;
+const KIND_REAPER = 2;
+const KIND_GUNWAGON = 3;
+const KIND_WHEELSAW = 4;
+
+// formation名(stages.js) → kind番号。wave.formationの値からここで解決する。
+const KIND_BY_FORMATION = {
+  [FORMATIONS.SCATTER]: KIND_SCATTER,
+  [FORMATIONS.DRIFTER]: KIND_DRIFTER,
+  [FORMATIONS.REAPER]: KIND_REAPER,
+  [FORMATIONS.GUNWAGON]: KIND_GUNWAGON,
+  [FORMATIONS.WHEELSAW]: KIND_WHEELSAW,
+};
+
+// kindごとの静的データ(タイル)。耐久/出現口/編成数はwave側(stages.js)が持つためここには置かない。
+const ENEMY_DEF_BY_KIND = [
+  { tile: TILE16_ENEMY_SCATTER },
+  { tile: TILE16_ENEMY_DRIFTER },
+  { tile: TILE16_ENEMY_REAPER },
+  { tile: TILE16_ENEMY_GUNWAGON },
+  { tile: TILE16_ENEMY_WHEELSAW },
+];
+
+// 発射するkindかどうか。false のkindはatkTimerの減算/発射パイプラインへ一切触れない
+// (スキャッター/リーパー/ホイールソーは攻撃なし。無限に減算させて誤発火しないようここで断つ)。
+const ENEMY_CAN_FIRE_BY_KIND = [false, true, false, true, false];
+
+// 雑魚敵は一撃離脱(docs/enemies.md)。「離脱までに撃てる回数」をkind別に持つ。
+// GATE_X_MIN/GATE_X_SPREADと同じ「基準値+rndRangeでの上乗せ」の形にして、後で残り11種
+// (ハーベスタ/マザーの複数回射出など)を足すときも同じ形で拡張できるようにする。
+// 発射しないkind(SCATTER/REAPER/WHEELSAW)は値を持っていても実害がない
+// (ENEMY_CAN_FIRE_BY_KINDがfalseなので、この配列自体が参照されない)。
+const ENEMY_FIRE_LIMIT_MIN_BY_KIND = [0, 1, 0, 2, 0]; // DRIFTER=1回, GUNWAGON=2回起点
+const ENEMY_FIRE_LIMIT_SPREAD_BY_KIND = [1, 1, 1, 2, 1]; // GUNWAGONのみ+0..1で2〜3回に散らす
+
+// 発射上限に達した個体が離脱する時にkind固有の後始末(移動状態の切替)を行う関数テーブル。
+// 何もしないkindはleaveNoneを使う(ENEMY_MOVE_BY_KINDと同じ並び順: SCATTER/DRIFTER/REAPER/GUNWAGON/WHEELSAW)。
+function leaveNone() {}
+
+// 画面内判定(「一度でも画面内に入ったか」の判定用)。既存の画面外消滅判定(下端160px/上端-16px)と
+// 整合する範囲を採る。x方向はREAPER_X_EXIT_MIN/MAX_PXと同じ余裕(スプライト16px分)を使う。
+const ONSCREEN_X_MIN_PX = -16;
+const ONSCREEN_X_MAX_PX = 176;
+const ONSCREEN_Y_MIN_PX = -16;
+const ONSCREEN_Y_MAX_PX = 160;
 
 // EFFECTS.kind の使い分け（weapons.js の kind=0=ダイナマイト爆発と衝突しない値を使う）
 export const EFFECT_KIND_ENEMY_EXPLOSION = 1; // 敵/障害物撃破の爆発
@@ -52,11 +100,38 @@ const ENEMY_VY = 96; // 敵の下降速度。スクロール速度の1/2(128)以
 const V_SPACING = f(16); // V字の左右オフセット単位。横への広がりを強める
 const V_MAX_OFFSET = f(32); // waveBaseX(24..120px)から見て完全に画面外へ居座らない範囲でclamp
 const V_Y_STEP = f(6); // V字の前後(見た目上の奥行き)ずらし単位
-const COLUMN_Y_SPACING = f(20); // 縦列の初期縦間隔
-const SNAKE_Y_SPACING = f(24); // 蛇行編隊の初期縦間隔
-const SNAKE_STEP = 128; // 振れ幅2倍に合わせてstepも2倍にし、半周期フレーム数をほぼ維持する
+const COLUMN_Y_SPACING = f(20); // 縦列の初期縦間隔(ドリフターの縦列フェーズ/ホイールソーの入場間隔で共用)
+const SNAKE_STEP = 128; // 振れ幅2倍に合わせてstepも2倍にし、半周期フレーム数をほぼ維持する(ドリフター蛇行フェーズ)
 const SNAKE_AMPLITUDE = f(40); // 蛇行の振れ幅。anchorXから±40pxで大きく横へ振る
-const SNAKE_PHASE_STEP = 800; // 蛇行メンバー間の初期位相ずらし
+
+// --- ドリフター専用: 縦列→蛇行の切替しきい値 ---
+const DRIFTER_SNAKE_START_Y = f(72); // 画面高144pxの半分あたり(目安どおり)を超えたら蛇行に切り替える
+const DRIFTER_TRANSITIONED_FLAG = 2; // e.flags bit1: 蛇行フェーズへ切替済み
+const DRIFTER_LEAVING_FLAG = 4; // e.flags bit2: 発射上限(1回)に到達し離脱シーケンスへ入った
+
+// --- リーパー専用: 斜めに流れて短い滞在で抜ける ---
+const REAPER_VY = 112; // ENEMY_VY(96)よりやや速め。128以下は守りつつ「速い」印象を出す
+const REAPER_VX = f(1); // 1px/frame。横方向の移動が支配的になり、y到達より先にx方向で画面外へ抜ける
+const REAPER_ENTRY_X_SPACING = f(6); // メンバーごとに互い違いに軽くxをずらし重なりを避ける(V字と同じ考え方)
+const REAPER_X_EXIT_MIN_PX = -16; // これより左は画面外
+const REAPER_X_EXIT_MAX_PX = 176; // これより右は画面外(スプライト16px分の余裕を見る)
+
+// --- ガンワゴン専用: 画面上部に居座り左右へ滑る。降りてこない ---
+const GUNWAGON_TARGET_Y = f(24); // 居座りy。目安f(16)〜f(32)の中間
+const GUNWAGON_SLIDE_VX = 80; // 左右へ滑る速度(ENEMY_VYと同オーダー)
+const GUNWAGON_MIN_X = f(0);
+const GUNWAGON_MAX_X = f(144); // 画面幅160-スプライト幅16
+const GUNWAGON_SETTLED_FLAG = 2; // e.flags bit1: 定位置(GUNWAGON_TARGET_Y)へ到達済み
+const GUNWAGON_LEAVING_FLAG = 4; // e.flags bit2: 退場シーケンス開始済み(vyを負にして上へ抜けさせた)
+// 退場トリガはフレーム数居座りではなく発射回数基準(ENEMY_FIRE_LIMIT_MIN/SPREAD_BY_KIND参照)。
+// 段階3当初のGUNWAGON_STAY_FRAMES(720f固定居座り)は「雑魚敵は一撃離脱」の発射回数基準へ差し替え、
+// 未使用になったため削除した。
+
+// --- ホイールソー専用: 左右端で跳ね返りながら降下。破壊不能 ---
+const WHEELSAW_VX = 96; // 跳ね返りの横速度。ENEMY_VYと同オーダー
+const WHEELSAW_MIN_X = f(0);
+const WHEELSAW_MAX_X = f(144); // 画面幅160-スプライト幅16(スプライト半分を考慮したclamp範囲)
+
 // 出現口(GATES.*)ごとの編隊アンカーx範囲(px)。index は GATES の値と対応する
 // (FRONT_LEFT, FRONT_RIGHT, FRONT_CENTER, BACK_LEFT, BACK_RIGHT)。BACK_AUTOは解決後の値でしか引かない。
 const GATE_X_MIN = [8, 96, 64, 8, 96];
@@ -87,7 +162,6 @@ const SHAKE_PERIOD_SHIFT = 3; // オフロード揺れの周期(game.jsのSHAKE_
 const ENEMY_SPEED_OFFROAD_NUM = 0x00ab;
 const ENEMY_BULLET_SPEED = 2; // 敵弾速度(px/frame、整数)
 export const ENEMY_BULLET_TILE = TILE_BULLET_ENEMY; // 敵弾専用タイル(最暗色index3)。boss.jsも同じ弾タイルを流用する
-const ENEMY_BULLET_FIXED_DIR = 8; // DIR16のindex8=真下
 const ENEMY_FIRE_PROXIMITY = f(32); // 自機/敵の中心距離がx/yとも32px以内なら発射しない
 const SPRITE_CENTER_OFFSET = f(8); // 16x16スプライトの中心。近距離発射抑止はヒットボックスではなく見た目中心で判定する
 
@@ -95,8 +169,84 @@ const OBSTACLE_HP = 3; // 破壊可障害物の耐久
 
 const ENEMY_SCORE_VALUE = 100;
 const OBSTACLE_SCORE_VALUE = 50;
+// リーパー全滅ボーナス: ENEMY_SCORE_VALUE(100)の3倍=300。5機編隊を「抜けきる前に全滅」させる
+// 腕前を、体当たりのみのスキャッター(撃破のみ100pt)より明確に高く評価する値として採用。
+// docs/enemies.mdの役割記述「抜けきる前に5台倒すと高得点」に基づく(具体的な倍率は本実装での採用値)。
+const REAPER_ALLKILL_BONUS = ENEMY_SCORE_VALUE * 3;
 
 const HIT_FLASH_FRAMES = 2; // 被弾時の白フラッシュ表示フレーム数
+
+// --- リーパー全滅ボーナスの追跡用スロット(段階3の決定事項: makePoolと同様の固定長事前確保配列) ---
+// 同時に複数のリーパー編隊が並存する余地(ウェーブ空き90〜150フレームの間に前編隊がまだ残っている等)を
+// 見込んで4スロット確保する。frame内でのnew/{}生成を避けるため、モジュール読み込み時に1回だけ確保し、
+// 以降はスロットを使い回す(makePool方式そのまま流用)。
+const REAPER_TRACK_SLOTS = 4;
+const reaperTrack = [];
+for (let i = 0; i < REAPER_TRACK_SLOTS; i++) {
+  reaperTrack.push({ active: false, formationId: 0, total: 0, killed: 0, accounted: 0, escaped: false });
+}
+
+// 新しいリーパー編隊の追跡を開始する(wave先頭メンバーのスポーン時に1回だけ呼ぶ)。空きスロットが無ければ
+// (通常起こらない想定: 4編隊同時分)何もしない=その編隊はボーナス対象外になるだけで安全側に倒れる。
+function reaperTrackStart(formationId, total) {
+  for (let i = 0; i < REAPER_TRACK_SLOTS; i++) {
+    const t = reaperTrack[i];
+    if (!t.active) {
+      t.active = true;
+      t.formationId = formationId;
+      t.total = total;
+      t.killed = 0;
+      t.accounted = 0;
+      t.escaped = false;
+      return;
+    }
+  }
+}
+
+function reaperTrackFind(formationId) {
+  for (let i = 0; i < REAPER_TRACK_SLOTS; i++) {
+    const t = reaperTrack[i];
+    if (t.active && t.formationId === formationId) {
+      return t;
+    }
+  }
+  return null;
+}
+
+// リーパーが自弾で撃破された時に呼ぶ。戻り値: 全滅ボーナスを与えるべきならtrue。
+function reaperTrackOnKill(formationId) {
+  const t = reaperTrackFind(formationId);
+  if (!t) {
+    return false;
+  }
+  t.killed += 1;
+  t.accounted += 1;
+  let bonus = false;
+  if (t.accounted >= t.total) {
+    bonus = !t.escaped && t.killed === t.total;
+    t.active = false; // 編隊の決着がついたのでスロットを解放し、次の編隊に使い回す
+  }
+  return bonus;
+}
+
+// リーパーが撃たれずに画面外へ抜けた時に呼ぶ。以降そのformationIdは全滅ボーナス対象外になる。
+function reaperTrackOnEscape(formationId) {
+  const t = reaperTrackFind(formationId);
+  if (!t) {
+    return;
+  }
+  t.escaped = true;
+  t.accounted += 1;
+  if (t.accounted >= t.total) {
+    t.active = false;
+  }
+}
+
+function resetReaperTrack() {
+  for (let i = 0; i < REAPER_TRACK_SLOTS; i++) {
+    reaperTrack[i].active = false;
+  }
+}
 
 // --- モジュールスコープの進行状態（配列生成なしのプレーン変数。resetEnemies()で初期化） ---
 let sectionIndex = 0; // 0=prelude, 1=main, 2=boss到達(以降何もしない)
@@ -148,6 +298,7 @@ export function resetEnemies() {
   forEach(ENEMIES, killSlot);
   forEach(ENEMY_BULLETS, killSlot);
   forEach(OBSTACLES, killSlot);
+  resetReaperTrack();
 }
 
 // セクション境界を跨いだかどうかを判定して進める。updateEnemies/updateObstacles両方から
@@ -197,46 +348,99 @@ function resolveGate(gate) {
   return curPlayerX >= SCREEN_CENTER_X ? GATES.BACK_LEFT : GATES.BACK_RIGHT;
 }
 
+// 出現口(gate)から、前方/背後どちらの縁から入るかを解決する。現行5種は全て前方出現口のみを
+// 使うため常にback=falseになるが、将来の背後タイプ追加に備えGATE_IS_BACKをそのまま参照する。
+function edgeParamsForGate(gate) {
+  const back = GATE_IS_BACK[gate] === 1;
+  return {
+    vySign: back ? -1 : 1,
+    edgeY: back ? f(144) : f(-16),
+    // 後続メンバーの入場を時間差にするための積み上げ方向。前方は上端の外側(さらに負)へ、
+    // 背後は下端の外側(さらに正)へ積む。
+    edgeStep: back ? 1 : -1,
+  };
+}
+
+// --- kindごとの初期化関数(ENEMY_INIT_BY_KINDから呼ばれる) ---
+// 共通フィールド(hp/flags/atkTimer/formationId/timer/tile)はinitEnemyFromWaveが先に設定済み。
+// ここではkind固有のx/y/vx/vy/anchorXだけを設定する。
+
+function initScatter(e, wave, memberIndex, gate) {
+  // 元KIND_V。V字編隊で降り、中央から左右へ広がる(docs/enemies.md #1)。既存V字ロジックをそのまま流用。
+  const { vySign, edgeY, edgeStep } = edgeParamsForGate(gate);
+  e.x = waveBaseX + vOffsetX(memberIndex);
+  e.y = edgeY + edgeStep * vHalfIndex(memberIndex) * V_Y_STEP;
+  e.vx = 0;
+  e.vy = vySign * ENEMY_VY;
+}
+
+function initDrifter(e, wave, memberIndex, gate) {
+  // 元KIND_COLUMN。縦列で降下し、画面中程(DRIFTER_SNAKE_START_Y)を超えたら蛇行フェーズへ切り替える
+  // (切替はupdateOneEnemy側で毎フレーム判定する。ここでは縦列フェーズの初期状態だけを作る)。
+  const { vySign, edgeY, edgeStep } = edgeParamsForGate(gate);
+  e.x = waveBaseX;
+  e.y = edgeY + edgeStep * memberIndex * COLUMN_Y_SPACING;
+  e.anchorX = waveBaseX; // 蛇行フェーズに入った時点のxで上書きする(初期値は保険)
+  e.vx = 0;
+  e.vy = vySign * ENEMY_VY;
+}
+
+function initReaper(e, wave, memberIndex, gate) {
+  // 前左/前右から斜めに流れて画面外へ抜ける(docs/enemies.md #3)。攻撃なし。滞在は他種より短い
+  // (REAPER_VXが支配的で、y到達より先にx方向の画面外判定に掛かる設計。updateOneEnemy参照)。
+  const { edgeY, edgeStep } = edgeParamsForGate(gate);
+  const half = vHalfIndex(memberIndex);
+  const sign = (memberIndex & 1) === 1 ? -1 : 1;
+  e.x = waveBaseX + sign * half * REAPER_ENTRY_X_SPACING;
+  e.y = edgeY + edgeStep * half * V_Y_STEP;
+  e.vx = gate === GATES.FRONT_LEFT ? -REAPER_VX : REAPER_VX; // 出た側へさらに流れて速く抜ける
+  e.vy = REAPER_VY;
+  if (memberIndex === 0) {
+    // 編隊の先頭メンバーがスポーンする瞬間に1回だけ、全滅ボーナス追跡を開始する。
+    reaperTrackStart(currentFormationId, wave.count);
+  }
+}
+
+function initGunwagon(e, wave, memberIndex, gate) {
+  // 正面のみ(docs/enemies.md #5)。前方の縁から入り、GUNWAGON_TARGET_Yで居座って左右に滑る。
+  // 降りてこない/退場条件はupdateOneEnemy側(moveGunwagon)で管理する。
+  e.x = waveBaseX;
+  e.y = f(-16);
+  e.vx = rndRange(2) === 0 ? -GUNWAGON_SLIDE_VX : GUNWAGON_SLIDE_VX;
+  e.vy = ENEMY_VY; // 定位置(GUNWAGON_TARGET_Y)に達するまでの入場降下速度
+}
+
+function initWheelsaw(e, wave, memberIndex, gate) {
+  // 前左/前右から出て、左右の画面端で跳ね返りながら降下する(docs/enemies.md #13)。破壊不能。
+  const { edgeY, edgeStep } = edgeParamsForGate(gate);
+  e.x = waveBaseX;
+  e.y = edgeY + edgeStep * memberIndex * COLUMN_Y_SPACING;
+  e.vx = gate === GATES.FRONT_LEFT ? WHEELSAW_VX : -WHEELSAW_VX; // 中央方向へ動き出し、以後は端で反転
+  e.vy = ENEMY_VY;
+}
+
+// kind→初期化関数のディスパッチテーブル(段階3の決定事項: if の羅列にしない)。
+const ENEMY_INIT_BY_KIND = [initScatter, initDrifter, initReaper, initGunwagon, initWheelsaw];
+
 function initEnemyFromWave(e, wave, memberIndex, gate) {
+  const kind = KIND_BY_FORMATION[wave.formation];
+  e.kind = kind;
+  e.tile = ENEMY_DEF_BY_KIND[kind].tile;
   e.hp = applyLoop(wave.hp, loop);
   e.flags = 0;
   e.atkTimer = FIRE_INTERVAL_BASE + rndRange(FIRE_INTERVAL_JITTER);
   e.formationId = currentFormationId;
   e.timer = 0;
+  e.everOnscreen = false; // プール使い回し対策。スポーン直後は必ず未経験へ戻す
+  e.fireCount = 0;
+  // 発射しないkindはfireLimitを0のままにする(rndRangeでLFSRを無駄に1歩進めない。
+  // ENEMY_CAN_FIRE_BY_KINDがfalseならどのみち攻撃パイプラインへ触れないため実害はないが、
+  // 他のスポーン処理が使うLFSR系列をむやみにずらさない方を優先する)。
+  e.fireLimit = ENEMY_CAN_FIRE_BY_KIND[kind]
+    ? ENEMY_FIRE_LIMIT_MIN_BY_KIND[kind] + rndRange(ENEMY_FIRE_LIMIT_SPREAD_BY_KIND[kind])
+    : 0;
 
-  // 背後出現口は画面下端の外から上へ抜ける(縦速度の符号が逆になる)。前方は従来どおり上端の外から下降する。
-  const back = GATE_IS_BACK[gate] === 1;
-  const vySign = back ? -1 : 1;
-  const edgeY = back ? f(144) : f(-16);
-  // 後続メンバーの入場を時間差にするための積み上げ方向。前方は上端の外側(さらに負)へ、
-  // 背後は下端の外側(さらに正)へ積む。
-  const edgeStep = back ? 1 : -1;
-
-  if (wave.formation === FORMATIONS.V) {
-    e.kind = KIND_V;
-    e.tile = TILE16_ENEMY_A; // 理由: バイク風の細身タイルはV字/蛇行の機敏な編隊に合う
-    e.x = waveBaseX + vOffsetX(memberIndex);
-    e.y = edgeY + edgeStep * vHalfIndex(memberIndex) * V_Y_STEP;
-    e.vx = 0;
-    e.vy = vySign * ENEMY_VY;
-  } else if (wave.formation === FORMATIONS.COLUMN) {
-    e.kind = KIND_COLUMN;
-    e.tile = TILE16_ENEMY_B; // 理由: 丸い車風の幅広タイルは縦列でどっしり進む見た目に合う
-    e.x = waveBaseX;
-    e.y = edgeY + edgeStep * memberIndex * COLUMN_Y_SPACING;
-    e.vx = 0;
-    e.vy = vySign * ENEMY_VY;
-  } else {
-    // SNAKE
-    e.kind = KIND_SNAKE;
-    e.tile = TILE16_ENEMY_A; // V字と同じ機敏な見た目を流用
-    e.x = waveBaseX;
-    e.y = edgeY + edgeStep * memberIndex * SNAKE_Y_SPACING;
-    e.anchorX = waveBaseX; // 蛇行の振動中心x（専用フィールド）
-    e.vx = 0; // SNAKEでは未使用
-    e.vy = vySign * ENEMY_VY;
-    e.timer = memberIndex * SNAKE_PHASE_STEP; // メンバー間で初期位相をずらし群れがバラける動きにする
-  }
+  ENEMY_INIT_BY_KIND[kind](e, wave, memberIndex, gate);
 }
 
 // 現在セクションのwavesを順に、ウェーブ単位でスポーンする。
@@ -285,38 +489,129 @@ function spawnPendingWave() {
   }
 }
 
+// --- kindごとの毎フレーム移動処理(ENEMY_MOVE_BY_KINDから呼ばれる) ---
+// e.y(縦方向)は原則この後の共通コード(オフロード/減速スケール込みのvy積分)へ任せる。
+// ここではkind固有の横移動・フェーズ遷移・退場トリガだけを行う。何もしないkindはmoveNoneを使う。
+
+function moveNone() {}
+
+function moveDrifter(e) {
+  if (e.flags & DRIFTER_LEAVING_FLAG) {
+    // 1発撃って離脱シーケンスに入った後は蛇行をやめる。xはそのまま(動かさない)、
+    // yは共通コード(updateOneEnemyのvy積分)にまっすぐ任せて画面外(下)へ抜ける。
+    return;
+  }
+  if ((e.flags & DRIFTER_TRANSITIONED_FLAG) === 0) {
+    // 縦列フェーズ: xは動かさない(vx=0のまま)。中程を超えたら蛇行フェーズへ切り替える。
+    if (e.y >= DRIFTER_SNAKE_START_Y) {
+      e.flags |= DRIFTER_TRANSITIONED_FLAG;
+      e.anchorX = e.x; // 切替時点のxを振動中心にする
+      e.timer = 0;
+    }
+    return;
+  }
+  // 蛇行フェーズ(元KIND_SNAKEのロジックを流用)。折り返し(flipped)のたびに1回だけ
+  // atkTimerを予備動作の先頭(TELEGRAPH_SLOWDOWN_FRAMES+1)へセットし、既存の減速→フラッシュ→発射
+  // パイプラインへ乗せる(多重発火は起きない: flags&1が変化した回のみflippedがtrueになるため)。
+  let step = SNAKE_STEP;
+  if (e.atkTimer <= TELEGRAPH_SLOWDOWN_FRAMES) {
+    step = fmul(step, TELEGRAPH_SLOWDOWN_NUM);
+  }
+  const dir = e.flags & 1;
+  let flipped = false;
+  if (dir === 0) {
+    e.timer += step;
+    if (e.timer >= SNAKE_AMPLITUDE) {
+      e.flags |= 1;
+      flipped = true;
+    }
+  } else {
+    e.timer -= step;
+    if (e.timer <= -SNAKE_AMPLITUDE) {
+      e.flags &= ~1;
+      flipped = true;
+    }
+  }
+  e.x = e.anchorX + e.timer;
+  if (flipped) {
+    e.atkTimer = TELEGRAPH_SLOWDOWN_FRAMES + 1;
+  }
+}
+
+function moveReaper(e) {
+  e.x += e.vx; // 斜め軌道の横方向はここで積む(縦方向は共通コードのvy積分に任せる)
+}
+
+function moveGunwagon(e) {
+  // 左右へ滑る(画面端でclampして反転)。降下中/居座り中/退場中いずれのフェーズでも横滑りは続ける。
+  e.x += e.vx;
+  if (e.x < GUNWAGON_MIN_X) {
+    e.x = GUNWAGON_MIN_X;
+    e.vx = -e.vx;
+  } else if (e.x > GUNWAGON_MAX_X) {
+    e.x = GUNWAGON_MAX_X;
+    e.vx = -e.vx;
+  }
+
+  if ((e.flags & GUNWAGON_SETTLED_FLAG) === 0) {
+    // 降下中。定位置(GUNWAGON_TARGET_Y)へ到達したらvyを0にして居座りフェーズへ入る。
+    if (e.y >= GUNWAGON_TARGET_Y) {
+      e.y = GUNWAGON_TARGET_Y;
+      e.vy = 0;
+      e.flags |= GUNWAGON_SETTLED_FLAG;
+    }
+  }
+  // 居座り中(SETTLED済み・LEAVING前)はvy=0のまま何もしない。離脱(vyを負にして上へ抜ける)は
+  // 2〜3回撃った時点でupdateOneEnemyの攻撃パイプラインからleaveGunwagon()が起動する。
+}
+
+function moveWheelsaw(e) {
+  // 左右の画面端(スプライト半分を考慮したclamp範囲)で跳ね返りながら降下する。
+  e.x += e.vx;
+  if (e.x < WHEELSAW_MIN_X) {
+    e.x = WHEELSAW_MIN_X;
+    e.vx = -e.vx;
+  } else if (e.x > WHEELSAW_MAX_X) {
+    e.x = WHEELSAW_MAX_X;
+    e.vx = -e.vx;
+  }
+}
+
+// kind→毎フレーム移動関数のディスパッチテーブル(段階3の決定事項: if の羅列にしない)。
+const ENEMY_MOVE_BY_KIND = [moveNone, moveDrifter, moveReaper, moveGunwagon, moveWheelsaw];
+
+// --- 発射上限到達時の離脱トリガ(kind別)。ENEMY_MOVE_BY_KINDと同じ並び順。 ---
+// 呼ばれるのはfireEnemyBullet直後、fireCountがfireLimitに達した1フレームのみ(updateOneEnemy参照)。
+
+function leaveDrifter(e) {
+  // GUNWAGON_LEAVING_FLAGと同じパターンの一般化: フラグを立てて以後の蛇行を止め、
+  // まっすぐ画面外(下)へ抜ける(vy自体はすでに正=前方出現の進行方向のまま、向きは変えない)。
+  e.flags |= DRIFTER_LEAVING_FLAG;
+}
+
+function leaveGunwagon(e) {
+  // 画面上部に居座っているため、退場は来た側(上)へ抜ける = vyを負にする。
+  e.vy = -ENEMY_VY;
+  e.flags |= GUNWAGON_LEAVING_FLAG;
+}
+
+const ENEMY_LEAVE_BY_KIND = [leaveNone, leaveDrifter, leaveNone, leaveGunwagon, leaveNone];
+
 function updateOneEnemy(e) {
   // 被弾フラッシュの残フレーム消化
   if (e.flashTimer > 0) {
     e.flashTimer -= 1;
   }
 
-  if (e.kind === KIND_SNAKE) {
-    let step = SNAKE_STEP;
-    if (e.atkTimer <= TELEGRAPH_SLOWDOWN_FRAMES) {
-      step = fmul(step, TELEGRAPH_SLOWDOWN_NUM);
-    }
-    const dir = e.flags & 1;
-    if (dir === 0) {
-      e.timer += step;
-      if (e.timer >= SNAKE_AMPLITUDE) {
-        e.flags |= 1;
-      }
-    } else {
-      e.timer -= step;
-      if (e.timer <= -SNAKE_AMPLITUDE) {
-        e.flags &= ~1;
-      }
-    }
-    e.x = e.anchorX + e.timer; // anchorXは振動中心x（初期化時に設定済み）
-  }
+  ENEMY_MOVE_BY_KIND[e.kind](e);
 
   // オフロード判定はplayerと同じ規則: 足元(下端, +16)の行をサンプルする。
   const centerPx = toPx(e.x) + 8;
   e.offRoad = isOffRoadAt(curScrollY, centerPx, toPx(e.y) + 16);
 
-  // e.vy自体は生成時定数のまま書き換えない（onroad復帰時に巻き戻す必要をなくすため）。
-  // 決定事項: SNAKEの横方向の蛇行(timerベース)は複雑化を避けて非スケール対象のままとし、
+  // e.vy自体は生成時定数のまま書き換えない場合が多いが、ガンワゴンは居座り/退場の状態遷移で
+  // vyそのものを書き換える(0→負)設計のため、ここでは「その時点のe.vy」を使うのが正しい。
+  // 決定事項: ドリフター蛇行フェーズの横方向(timerベース)は複雑化を避けて非スケール対象のままとし、
   // 「移動速度2/3」・「自機死亡演出中のスクロール速度比」は支配的な縦方向の進行(vy)にのみ適用する。
   let scaledVy = fmul(e.vy, curEnemySpeedRatio); // 自機死亡演出中〜復活の間、世界全体を一緒にスローにする
   if (e.atkTimer <= TELEGRAPH_SLOWDOWN_FRAMES) {
@@ -325,16 +620,51 @@ function updateOneEnemy(e) {
   const vy = e.offRoad ? fmul(scaledVy, ENEMY_SPEED_OFFROAD_NUM) : scaledVy;
   e.y += vy;
 
-  // e.vy(生成時定数、書き換えない)の符号で進行方向を見る。前方出現(vy>=0)は下端を抜けたら消え、
-  // 背後出現(vy<0)は上端を抜けたら消える。逆側の判定を入れると、縦列/蛇行の後続メンバーが
-  // 画面外の入場待機位置(まだ側)にいるだけで誤って消えてしまうため、進行方向側のみ見る。
-  if (e.vy >= 0) {
-    if (toPx(e.y) > 160) {
+  // 一度も画面内に入ったことがない個体(スポーン直後、画面外の入場待機位置)は画面外消滅判定の
+  // 対象にしない。ここで一度入ったことを記録できたときだけ、以下の消滅判定を以後有効にする
+  // (「一度画面内に入った個体が完全に外へ出たら消す」。docs/enemies.md「雑魚敵は一撃離脱」節)。
+  if (!e.everOnscreen) {
+    if (
+      toPx(e.x) > ONSCREEN_X_MIN_PX &&
+      toPx(e.x) < ONSCREEN_X_MAX_PX &&
+      toPx(e.y) > ONSCREEN_Y_MIN_PX &&
+      toPx(e.y) < ONSCREEN_Y_MAX_PX
+    ) {
+      e.everOnscreen = true;
+    }
+  }
+
+  // e.vy(現在値)の符号で進行方向を見る。前方出現かつ下降中(vy>=0)は下端を抜けたら消え、
+  // 上方向へ抜ける途中(vy<0。ガンワゴンの退場、または将来の背後出現)は上端を抜けたら消える。
+  // 逆側の判定を入れると、縦列/蛇行の後続メンバーが画面外の入場待機位置(まだ側)にいるだけで
+  // 誤って消えてしまうため、進行方向側のみ見る。everOnscreenでさらに「まだ一度も入っていない」
+  // 個体を除外し、スポーン直後の全滅を防ぐ。
+  if (e.everOnscreen) {
+    if (e.vy >= 0) {
+      if (toPx(e.y) > 160) {
+        if (e.kind === KIND_REAPER) {
+          reaperTrackOnEscape(e.formationId);
+        }
+        e.alive = false;
+        return;
+      }
+      // リーパーのみ、x方向の画面外もチェックする(vxが支配的な斜め軌道で、y到達より先に
+      // 左右へ抜けるのが正しい滞在時間の短さになるため)。他kindはx方向が常に画面内に収まる
+      // 設計(V字のclamp/ガンワゴン・ホイールソーのclamp)なので、ここで判定すると誤爆する。
+      if (e.kind === KIND_REAPER && (toPx(e.x) < REAPER_X_EXIT_MIN_PX || toPx(e.x) > REAPER_X_EXIT_MAX_PX)) {
+        reaperTrackOnEscape(e.formationId);
+        e.alive = false;
+        return;
+      }
+    } else if (toPx(e.y) < -16) {
       e.alive = false;
       return;
     }
-  } else if (toPx(e.y) < -16) {
-    e.alive = false;
+  }
+
+  // 発射しないkind(スキャッター/リーパー/ホイールソー)はここで打ち切り、atkTimerに一切触れない
+  // (触れ続けるといつか0に達して誤発射するため。ENEMY_CAN_FIRE_BY_KIND参照)。
+  if (!ENEMY_CAN_FIRE_BY_KIND[e.kind]) {
     return;
   }
 
@@ -342,6 +672,11 @@ function updateOneEnemy(e) {
   // 発射予備動作つきの攻撃サイクル。先に減速し、TELEGRAPH_FRAMES以下になると描画側がpalInvertを点滅させる。
   // atkTimerがTELEGRAPH_FRAMES以下に達するまでは絶対に発射しないので、予備動作なしで撃つ敵は存在しない。
   if (curSpawnFrozen) {
+    return;
+  }
+  // 雑魚敵は一撃離脱: 発射上限(fireLimit)に達した個体は、以後この攻撃パイプラインへ一切触れない
+  // (leaveXxx()が既にkind固有の離脱動作へ切り替え済み。ここで毎フレーム再トリガする必要はない)。
+  if (e.fireLimit > 0 && e.fireCount >= e.fireLimit) {
     return;
   }
   // 予備動作へ入る手前で、自機が近いあいだはカウントダウンごと止める。
@@ -362,7 +697,17 @@ function updateOneEnemy(e) {
       return;
     }
     fireEnemyBullet(e);
-    e.atkTimer = FIRE_INTERVAL_BASE + rndRange(FIRE_INTERVAL_JITTER);
+    e.fireCount += 1;
+    if (e.fireLimit > 0 && e.fireCount >= e.fireLimit) {
+      // 一撃離脱の上限に到達。まず減速状態(TELEGRAPH_SLOWDOWN_NUM)を解除してから
+      // (でないと離脱中もずっと1/4速のまま這うことになる)、kind固有の離脱動作へ切り替える。
+      e.atkTimer = TELEGRAPH_SLOWDOWN_FRAMES + 1;
+      ENEMY_LEAVE_BY_KIND[e.kind](e);
+    } else {
+      // ドリフターは折り返し(moveDrifter)がatkTimerを直接上書きして再トリガーするため、ここでの
+      // 周期リセットは実質「折り返しが来るまでの保険値」になる。ガンワゴンはこの周期でそのまま撃ち続ける。
+      e.atkTimer = FIRE_INTERVAL_BASE + rndRange(FIRE_INTERVAL_JITTER);
+    }
   }
 }
 
@@ -384,8 +729,9 @@ function fireEnemyBullet(e) {
     return;
   }
 
-  // 決定事項: COLUMN編隊は固定方向(真下)、V/SNAKEは自機狙い。両パターンを実装する要件を満たす。
-  const dirIdx = e.kind === KIND_COLUMN ? ENEMY_BULLET_FIXED_DIR : aim16(curPlayerX - e.x, curPlayerY - e.y);
+  // 段階3の決定事項: ENEMY_BULLET_FIXED_DIR(旧COLUMN専用の固定下方向)は使わず、全kindがaim16で
+  // 自機を狙う(ドリフター/ガンワゴンともに16方向の狙い撃ち。spec:「全種aim16でよい」)。
+  const dirIdx = aim16(curPlayerX - e.x, curPlayerY - e.y);
   const dir = DIR16[dirIdx];
 
   b.dirIdx = dirIdx;
@@ -622,6 +968,14 @@ function spawnScorePop(x, y, value) {
 // damageEnemy(e, dmg): ダメージを与え、撃破時は爆発/破片/スコアポップを発生させ、
 // game.js側で score に加算すべき値を返す（撃破しなければ0を返す）。
 export function damageEnemy(e, dmg) {
+  // ホイールソー: 破壊不能(docs/enemies.md #13)。hp減算・爆発・スコア・被弾フラッシュを一切
+  // 発生させずに0を返す(不可壊なのでダメージ演出を出さない)。弾の消費/貫通挙動はこの関数を呼ぶ
+  // checkOneEnemyAgainstCurBullet(game.js)側の既存ロジックにそのまま任せる(この関数は変更不要)。
+  // 非pierce弾はヒットで消え、鉄球(pierce)は既存通り貫通する — それが「弾は消す/貫通どちらでも
+  // よい」という要件を自然に満たす。
+  if (e.kind === KIND_WHEELSAW) {
+    return 0;
+  }
   e.hp -= dmg;
   e.flashTimer = HIT_FLASH_FRAMES;
   if (e.hp <= 0) {
@@ -629,8 +983,14 @@ export function damageEnemy(e, dmg) {
     spawnEnemyExplosion(e.x, e.y);
     spawnOneDebris(e.x, e.y, -f(1), -f(1));
     spawnOneDebris(e.x, e.y, f(1), -f(1));
-    spawnScorePop(e.x, e.y, ENEMY_SCORE_VALUE);
-    return ENEMY_SCORE_VALUE;
+    let value = ENEMY_SCORE_VALUE;
+    if (e.kind === KIND_REAPER && reaperTrackOnKill(e.formationId)) {
+      // 同一編隊5機を「抜けきる前に全滅」させた瞬間。全滅ボーナスを撃破スコアに合算する
+      // (専用のスコアポップは増やさず、この撃破の1ポップにボーナスを乗せて見せる)。
+      value += REAPER_ALLKILL_BONUS;
+    }
+    spawnScorePop(e.x, e.y, value);
+    return value;
   }
   return 0;
 }

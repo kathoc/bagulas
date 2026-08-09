@@ -17,6 +17,11 @@ import {
   TILE_EXPLOSION_FRAME1,
   TILE_EXPLOSION_FRAME2,
 } from '../art/generated/explosion.js';
+import { TILE_ENEMY_SCATTER } from '../art/generated/enemy_scatter.js';
+import { TILE_ENEMY_DRIFTER } from '../art/generated/enemy_drifter.js';
+import { TILE_ENEMY_REAPER } from '../art/generated/enemy_reaper.js';
+import { TILE_ENEMY_GUNWAGON } from '../art/generated/enemy_gunwagon.js';
+import { TILE_ENEMY_WHEELSAW } from '../art/generated/enemy_wheelsaw.js';
 
 function emptyTile(fill) {
   const t = new Uint8Array(64);
@@ -318,6 +323,31 @@ function buildObstacleCactus() {
   return quadFrom16(TILE_OBSTACLE_CACTUS);
 }
 
+// 敵: スキャッター（実素材: enemy_scatter.png。段階3で追加）
+function buildEnemyScatter() {
+  return quadFrom16(TILE_ENEMY_SCATTER);
+}
+
+// 敵: ドリフター（実素材: enemy_drifter.png。段階3で追加）
+function buildEnemyDrifter() {
+  return quadFrom16(TILE_ENEMY_DRIFTER);
+}
+
+// 敵: リーパー（実素材: enemy_reaper.png。段階3で追加）
+function buildEnemyReaper() {
+  return quadFrom16(TILE_ENEMY_REAPER);
+}
+
+// 敵: ガンワゴン（実素材: enemy_gunwagon.png。段階3で追加）
+function buildEnemyGunwagon() {
+  return quadFrom16(TILE_ENEMY_GUNWAGON);
+}
+
+// 敵: ホイールソー（実素材: enemy_wheelsaw.png。段階3で追加）
+function buildEnemyWheelsaw() {
+  return quadFrom16(TILE_ENEMY_WHEELSAW);
+}
+
 export function buildTiles() {
   const tiles = [];
   tiles.push(tileEmpty()); // 0
@@ -350,6 +380,12 @@ export function buildTiles() {
     ['TILE16_EXPLOSION_0', quadFrom16(TILE_EXPLOSION_FRAME0)], // 小
     ['TILE16_EXPLOSION_1', quadFrom16(TILE_EXPLOSION_FRAME1)], // 大
     ['TILE16_EXPLOSION_2', quadFrom16(TILE_EXPLOSION_FRAME2)], // 散
+    // 段階3: 敵5種（スキャッター/ドリフター/リーパー/ガンワゴン/ホイールソー）
+    ['TILE16_ENEMY_SCATTER', buildEnemyScatter()],
+    ['TILE16_ENEMY_DRIFTER', buildEnemyDrifter()],
+    ['TILE16_ENEMY_REAPER', buildEnemyReaper()],
+    ['TILE16_ENEMY_GUNWAGON', buildEnemyGunwagon()],
+    ['TILE16_ENEMY_WHEELSAW', buildEnemyWheelsaw()],
   ];
   const meta16Ids = {};
   for (const [name, quad] of META16_DEFS) {
@@ -378,6 +414,11 @@ const META16_ORDER = [
   'TILE16_EXPLOSION_0',
   'TILE16_EXPLOSION_1',
   'TILE16_EXPLOSION_2',
+  'TILE16_ENEMY_SCATTER',
+  'TILE16_ENEMY_DRIFTER',
+  'TILE16_ENEMY_REAPER',
+  'TILE16_ENEMY_GUNWAGON',
+  'TILE16_ENEMY_WHEELSAW',
 ];
 const NUM_FIXED_TILES = 12; // 道路系7枚(0-6) + 煙(7) + 自弾3種(8-10) + 敵弾(11)
 const META16_BASE = NUM_FIXED_TILES; // 固定タイル12枚の後ろ（フォントはタイルアトラスに含まれない）
@@ -399,3 +440,8 @@ export const TILE16_CACTUS = META16_BASE + META16_ORDER.indexOf('TILE16_CACTUS')
 export const TILE16_EXPLOSION_0 = META16_BASE + META16_ORDER.indexOf('TILE16_EXPLOSION_0') * 4;
 export const TILE16_EXPLOSION_1 = META16_BASE + META16_ORDER.indexOf('TILE16_EXPLOSION_1') * 4;
 export const TILE16_EXPLOSION_2 = META16_BASE + META16_ORDER.indexOf('TILE16_EXPLOSION_2') * 4;
+export const TILE16_ENEMY_SCATTER = META16_BASE + META16_ORDER.indexOf('TILE16_ENEMY_SCATTER') * 4;
+export const TILE16_ENEMY_DRIFTER = META16_BASE + META16_ORDER.indexOf('TILE16_ENEMY_DRIFTER') * 4;
+export const TILE16_ENEMY_REAPER = META16_BASE + META16_ORDER.indexOf('TILE16_ENEMY_REAPER') * 4;
+export const TILE16_ENEMY_GUNWAGON = META16_BASE + META16_ORDER.indexOf('TILE16_ENEMY_GUNWAGON') * 4;
+export const TILE16_ENEMY_WHEELSAW = META16_BASE + META16_ORDER.indexOf('TILE16_ENEMY_WHEELSAW') * 4;

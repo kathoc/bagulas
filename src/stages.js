@@ -2,11 +2,13 @@
 // 移植性ルール準拠: float リテラル禁止 / Math.random 禁止。整数演算のみ。
 // データ構造は docs/plans/m1-plan.md の stages.js 節に準拠。
 
-// 編隊フォーメーション種別（Step 3 実装側が参照する固定名）
+// 編隊フォーメーション種別（段階3: 敵5種実装。値はそのままenemies.jsのkindディスパッチへ渡る）
 export const FORMATIONS = Object.freeze({
-  V: 'V',
-  COLUMN: 'COLUMN',
-  SNAKE: 'SNAKE',
+  SCATTER: 'SCATTER',
+  DRIFTER: 'DRIFTER',
+  REAPER: 'REAPER',
+  GUNWAGON: 'GUNWAGON',
+  WHEELSAW: 'WHEELSAW',
 });
 
 // 障害物種別と破壊可否テーブル
@@ -30,12 +32,14 @@ export const GATES = Object.freeze({
 });
 
 // 敵種別ごとに使える出現口(データとして保持)。「正面のみ」等の性質をここで表現する。
-// 段階3(敵16種実装)で種ごとの正式なセットに拡張していく。現段階は既存3種(V/COLUMN/SNAKE)へ
-// 暫定のセットを与え、5出現口すべてが使われるようにしている。
+// docs/enemies.md の出現口列に対応（スキャッター/ドリフター=前3か所、リーパー/ホイールソー=前左右のみ、
+// ガンワゴン=正面のみ）。waves側でここに無い出現口を指定しないよう手で守る（実行時チェックはしない）。
 export const FORMATION_GATES = Object.freeze({
-  [FORMATIONS.V]: [GATES.FRONT_LEFT, GATES.FRONT_RIGHT, GATES.FRONT_CENTER],
-  [FORMATIONS.COLUMN]: [GATES.FRONT_CENTER],
-  [FORMATIONS.SNAKE]: [GATES.BACK_AUTO],
+  [FORMATIONS.SCATTER]: [GATES.FRONT_LEFT, GATES.FRONT_RIGHT, GATES.FRONT_CENTER],
+  [FORMATIONS.DRIFTER]: [GATES.FRONT_LEFT, GATES.FRONT_RIGHT, GATES.FRONT_CENTER],
+  [FORMATIONS.REAPER]: [GATES.FRONT_LEFT, GATES.FRONT_RIGHT],
+  [FORMATIONS.GUNWAGON]: [GATES.FRONT_CENTER],
+  [FORMATIONS.WHEELSAW]: [GATES.FRONT_LEFT, GATES.FRONT_RIGHT],
 });
 
 // 周回ごとの整数倍率適用ヘルパ。
@@ -58,30 +62,40 @@ const STAGE1_MAIN_LENGTH = 1400;
 // waves: 1ウェーブ=1種類・3〜5機・出現口1か所。ウェーブ間の空き(90〜150フレーム)は
 // enemies.js が実行時にLFSRで決めるため、ここでは距離(at)を持たず「順序」だけを表現する。
 // 同じ種類を出現口を変えて数ウェーブ続け、そのあと種類を切り替える並びにしてある。
+// 同じ種類を出現口を変えて数ウェーブ続けてから種類を切り替える並び（docs/enemies.md「ウェーブの並べ方」）。
+// 前哨戦は「弾を持たない敵を中心に」の方針どおりスキャッター/リーパー/ホイールソー(無称号)を主体にしつつ、
+// ドリフターも1〜2ウェーブだけ混ぜて「折り返しで撃つ」を早期に見せる。ガンワゴンは弾を持つため本編へ回す。
 const stage1Prelude = {
   type: 'prelude',
   length: STAGE1_PRELUDE_LENGTH,
   waves: [
-    { formation: FORMATIONS.V, count: 3, hp: 2, gate: GATES.FRONT_LEFT },
-    { formation: FORMATIONS.V, count: 4, hp: 2, gate: GATES.FRONT_RIGHT },
-    { formation: FORMATIONS.V, count: 3, hp: 2, gate: GATES.FRONT_CENTER },
-    { formation: FORMATIONS.COLUMN, count: 4, hp: 2, gate: GATES.FRONT_CENTER },
-    { formation: FORMATIONS.SNAKE, count: 5, hp: 1, gate: GATES.BACK_AUTO },
+    { formation: FORMATIONS.SCATTER, count: 3, hp: 2, gate: GATES.FRONT_LEFT },
+    { formation: FORMATIONS.SCATTER, count: 4, hp: 2, gate: GATES.FRONT_RIGHT },
+    { formation: FORMATIONS.SCATTER, count: 3, hp: 2, gate: GATES.FRONT_CENTER },
+    { formation: FORMATIONS.DRIFTER, count: 4, hp: 2, gate: GATES.FRONT_CENTER },
+    { formation: FORMATIONS.DRIFTER, count: 4, hp: 2, gate: GATES.FRONT_LEFT },
+    { formation: FORMATIONS.REAPER, count: 5, hp: 1, gate: GATES.FRONT_LEFT },
+    { formation: FORMATIONS.REAPER, count: 5, hp: 1, gate: GATES.FRONT_RIGHT },
+    { formation: FORMATIONS.WHEELSAW, count: 3, hp: 1, gate: GATES.FRONT_LEFT },
   ],
   obstacles: [],
 };
 
+// 本編: 荒野の主力はスキャッター/ドリフター、混ぜる敵としてガンワゴン/ホイールソー(docs/enemies.md
+// 「ステージ別の配分」)。リーパーも1ウェーブ再登場させ、5種すべてがstage1内で出現する構成にする。
 const stage1Main = {
   type: 'main',
   length: STAGE1_MAIN_LENGTH,
   waves: [
-    { formation: FORMATIONS.V, count: 3, hp: 3, gate: GATES.FRONT_LEFT },
-    { formation: FORMATIONS.V, count: 4, hp: 3, gate: GATES.FRONT_RIGHT },
-    { formation: FORMATIONS.V, count: 3, hp: 4, gate: GATES.FRONT_CENTER },
-    { formation: FORMATIONS.COLUMN, count: 4, hp: 3, gate: GATES.FRONT_CENTER },
-    { formation: FORMATIONS.COLUMN, count: 5, hp: 4, gate: GATES.FRONT_CENTER },
-    { formation: FORMATIONS.SNAKE, count: 4, hp: 2, gate: GATES.BACK_AUTO },
-    { formation: FORMATIONS.SNAKE, count: 5, hp: 3, gate: GATES.BACK_AUTO },
+    { formation: FORMATIONS.SCATTER, count: 3, hp: 3, gate: GATES.FRONT_LEFT },
+    { formation: FORMATIONS.SCATTER, count: 4, hp: 3, gate: GATES.FRONT_RIGHT },
+    { formation: FORMATIONS.SCATTER, count: 3, hp: 4, gate: GATES.FRONT_CENTER },
+    { formation: FORMATIONS.DRIFTER, count: 4, hp: 3, gate: GATES.FRONT_CENTER },
+    { formation: FORMATIONS.DRIFTER, count: 5, hp: 4, gate: GATES.FRONT_LEFT },
+    { formation: FORMATIONS.DRIFTER, count: 4, hp: 3, gate: GATES.FRONT_RIGHT },
+    { formation: FORMATIONS.GUNWAGON, count: 3, hp: 4, gate: GATES.FRONT_CENTER },
+    { formation: FORMATIONS.WHEELSAW, count: 3, hp: 1, gate: GATES.FRONT_RIGHT },
+    { formation: FORMATIONS.REAPER, count: 5, hp: 1, gate: GATES.FRONT_RIGHT },
   ],
   obstacles: [
     { at: 150, kind: OBSTACLE_KINDS.ROCK.id, x: 32 },
