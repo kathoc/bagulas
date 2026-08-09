@@ -156,7 +156,7 @@ function emptySection(type, bossId) {
 // 障害物(倒木・巨大植物・沼)は本タスクの対象外のため obstacles は空のままにする。
 // game.js の isStagePlayable() は現状 stageIndex===0 のみを実プレイ対象にしているため、
 // このセクションは通常のステージ進行では到達しない(M1のスコープ外)。
-// 検証は enemies.js の startAtWave(sectionIdx, waveIdx, stageIdx) 経由(game.startPlayAtの第4引数)で行う。
+// 通常のステージ進行では到達しない(ステージ1のみプレイ可能)。動きの確認はタイトルのアトラクトで行う。
 const STAGE2_PRELUDE_LENGTH = 800;
 const STAGE2_MAIN_LENGTH = 1400;
 
@@ -206,7 +206,7 @@ const stage2Boss = {
 // 自グループの4種のみで構成し、既存グループを混ぜていない)に合わせ、本ステージもグループ3の2種のみで
 // 構成する(スコープ外の種を混ぜない)。
 // game.js の isStagePlayable() は現状 stageIndex===0 のみを実プレイ対象にしているため、
-// このセクションは通常のステージ進行では到達しない。検証は game.startPlayAt(section, wave, invuln, 2) 経由で行う。
+// このセクションは通常のステージ進行では到達しない。
 const STAGE3_PRELUDE_LENGTH = 800;
 const STAGE3_MAIN_LENGTH = 1400;
 

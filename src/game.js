@@ -35,7 +35,6 @@ import {
   clearEnemies,
   setLoop,
   getSectionIndex,
-  startAtWave,
   isEnemyIntangible,
 } from './enemies.js';
 import { STAGES } from './stages.js';
@@ -192,6 +191,25 @@ function loadStage(idx) {
 }
 
 // TITLE/GAMEOVERからの(再)開始。stageIndex/loopもここでリセットする。
+// タイトル画面のアトラクト。専用の動きは持たず、本編と同じウェーブ列・同じ敵のコードを
+// そのまま流す(確認用の別実装を作らない。ゲーム側と確認側で動きの定義が分かれると、
+// どちらが正しいか分からなくなる)。自機は出さないので当たり判定・スコア・残機は動かさない。
+// 敵の狙い撃ちの目標は、自機の代わりに画面下の固定点(ATTRACT_AIM_X/Y)を渡す。
+const ATTRACT_AIM_X = f(72); // 画面中央下あたり。自機の初期位置と同じ場所
+const ATTRACT_AIM_Y = f(128);
+
+function updateAttract(scrollY) {
+  distance += 1; // ウェーブの進行に使う。自機が居ないぶんここで進める
+  // 速度比は等倍(256)。死亡演出のスローはアトラクトには無い(自機が居ないため)。
+  updateEnemies(distance, ATTRACT_AIM_X, ATTRACT_AIM_Y, scrollY, SCROLL_SPEED_BASE, false);
+  updateEnemyBullets();
+  // ウェーブ列を出しきったら最初から繰り返す。START待ちの間ずっと流れ続ける。
+  if (isAtBossSection()) {
+    resetEnemies();
+    distance = 0;
+  }
+}
+
 function startRun() {
   score = 0;
   lives = START_LIVES;
@@ -211,39 +229,6 @@ export function initGame() {
   distance = 0;
   resetPlayerState();
   resetEnemies();
-}
-
-// 進行の途中から、プレイ中の状態で開始する。検証・確認用の通常API。
-// initGame() の直後に呼ぶ。invulnFrames を大きく取ると被弾で止まらずに
-// 後半のウェーブまで到達できるので、自動プレイでの実測に使える。
-// URLの解釈はここではしない(src/debug.js が持つ)。
-// stageIdx(第4引数、省略可): 段階3グループ2(ホッパー/サンドワーム/サイドカー/マザー)を
-// STAGES[1](ジャングル)から検証するための追加パラメータ。省略時は0(荒野)のままなので、
-// 既存の3引数呼び出し(ステージ1の検証)は一切挙動が変わらない。
-// sectionIdx>=2はSTAGES[..].sectionsのボスセクションを指す。startAtWave()自体は前哨戦/本編
-// (0/1)しか受け付けないため、ボス撃破演出(docs/spec.md「ボス撃破の演出」)を検証する経路として
-// ここで直接ボス戦を開始する。通常プレイ(sectionIdx<2)の既存挙動は一切変えない。
-export function startPlayAt(sectionIdx, waveIdx, invulnFrames, stageIdx) {
-  if ((sectionIdx | 0) >= 2) {
-    distance = 0;
-    resetPlayerState();
-    stageIndex = stageIdx || 0;
-    setLoop(loop);
-    resetEnemies();
-    clearEnemies();
-    forEach(OBSTACLES, killObstacleSlot);
-    startBoss(loop);
-    gameState = STATE.BOSS;
-    if (invulnFrames > 0) {
-      playerInvuln = invulnFrames;
-    }
-    return;
-  }
-  gameState = STATE.PLAY;
-  startAtWave(sectionIdx, waveIdx, stageIdx || 0);
-  if (invulnFrames > 0) {
-    playerInvuln = invulnFrames;
-  }
 }
 
 export function getState() {
@@ -803,8 +788,10 @@ export function updateGame(scrollY) {
   if (gameState === STATE.TITLE) {
     if (isPressed(K.START)) {
       startRun();
+      return;
     }
-    return; // TITLE中は自機移動・物理を一切行わない
+    updateAttract(scrollY);
+    return; // TITLE中は自機を出さない(当たり判定・スコア・残機も動かさない)
   }
 
   if (gameState === STATE.CLEAR) {
@@ -921,6 +908,9 @@ function drawSmoke(s) {
 
 export function drawGame() {
   if (gameState === STATE.TITLE) {
+    // アトラクト: 敵を先に描き、その上にタイトル文字を重ねる
+    drawEnemyBullets();
+    drawEnemies();
     const title = 'BAGULAS';
     drawText(80 - title.length * 2, 60, title); // 4px等幅グリフなので中央寄せ
     const startMsg = isTouch() ? 'TAP START' : 'PRESS ENTER';

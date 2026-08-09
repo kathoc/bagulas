@@ -567,7 +567,7 @@ export function setLoop(n) {
 }
 
 // 現在対象にしているステージ(STAGES配列のindex)。既定0=STAGES[0](荒野、M1で実プレイ可能な唯一のステージ)。
-// 段階3グループ2の検証用にstartAtWave()の第3引数で切り替えられるようにする(通常プレイ経路は
+// ステージ番号。通常プレイ経路は
 // 常に0のまま触れないので、ステージ1の道中には一切影響しない)。
 let curStageIndex = 0;
 
@@ -608,7 +608,7 @@ export function resetEnemies() {
   currentGate = GATES.FRONT_CENTER;
   currentFormationId = 0;
   nextFormationId = 1;
-  curStageIndex = 0; // 通常の新規ゲームは常にステージ0(荒野)から。デバッグ用startAtWaveの3引数目でのみ変わる
+  curStageIndex = 0; // 通常の新規ゲームは常にステージ0(荒野)から
   playerVelocityPrimed = false;
   curPlayerVX = 0;
   curPlayerVY = 0;
@@ -878,54 +878,7 @@ function initEnemyFromWave(e, wave, memberIndex, gate) {
 // ウェーブの列自体はテーブルの並び順+フレームベースの空きだけで進む(決定論的)。
 // スプライト予算/プール空きが足りない場合はcursorを進めずそのフレームは諦め、次フレームに再試行する
 // （wave丸ごとスキップはしない。1体ずつ確保できた分だけ進める設計）。
-// 特定の種のウェーブだけを繰り返し出す(観察・確認用の通常API)。
-// URLの解釈はここではしない(src/debug.js が持つ)。null で通常のウェーブ表へ戻る。
-// 毎フレームの割り当てを避けるため、上書き用のウェーブ定義はモジュール初期化時に1つだけ作る。
-const OVERRIDE_WAVE = { formation: null, count: 4, hp: 2, gate: GATES.FRONT_CENTER };
-const OVERRIDE_GATES = [GATES.FRONT_LEFT, GATES.FRONT_CENTER, GATES.FRONT_RIGHT];
-let overrideGateCursor = 0;
-
-export function setWaveOverride(formationName) {
-  OVERRIDE_WAVE.formation = formationName;
-  overrideGateCursor = 0;
-  waveMemberIndex = 0;
-  waveGapTimer = 0;
-}
-
-// 上書き中は、出現口だけを順に変えながら同じ種のウェーブを繰り返す。
-function spawnOverrideWave() {
-  if (waveMemberIndex === 0) {
-    if (waveGapTimer > 0) {
-      waveGapTimer -= 1;
-      return;
-    }
-    OVERRIDE_WAVE.gate = OVERRIDE_GATES[overrideGateCursor];
-    overrideGateCursor = (overrideGateCursor + 1) % OVERRIDE_GATES.length;
-    currentGate = resolveGate(OVERRIDE_WAVE.gate);
-    waveBaseX = f(GATE_X_MIN[currentGate] + rndRange(GATE_X_SPREAD[currentGate]));
-    currentFormationId = nextFormationId;
-    nextFormationId += 1;
-  }
-  while (waveMemberIndex < OVERRIDE_WAVE.count) {
-    if (spriteBudgetLeft() < 4) {
-      return;
-    }
-    const e = spawn(ENEMIES);
-    if (!e) {
-      return;
-    }
-    initEnemyFromWave(e, OVERRIDE_WAVE, waveMemberIndex, currentGate);
-    waveMemberIndex += 1;
-  }
-  waveMemberIndex = 0;
-  waveGapTimer = nextWaveGap();
-}
-
 function spawnPendingWave() {
-  if (OVERRIDE_WAVE.formation !== null) {
-    spawnOverrideWave();
-    return;
-  }
   if (sectionIndex >= 2) {
     return;
   }
@@ -1742,42 +1695,6 @@ export function isEnemyIntangible(e) {
 
 // sectionIndex>=2 は STAGES[curStageIndex].sections の boss セクション(index2)に到達済みという意味。
 // game.js はこれを見てボス戦への遷移トリガに使う。
-// 進行の途中(セクション/ウェーブ)から開始する。検証・確認用の通常API。
-// スポーン順そのものは変えず、開始位置だけを進める。URLの解釈やデバッグ用の
-// 入口はここには置かない(src/debug.js が持ち、ブラウザ単体版からしか読まれない)。
-// stageIdx(第3引数、省略可): 段階3グループ2(ホッパー/サンドワーム/サイドカー/マザー)を
-// STAGES[1](ジャングル)の定義から検証するための追加パラメータ。省略時は0(荒野=通常のM1プレイ対象)
-// のままなので、既存の呼び出し(game.startPlayAt(section, wave, invuln))は一切挙動が変わらない。
-export function startAtWave(sectionIdx, waveIdx, stageIdx) {
-  let sti = stageIdx | 0;
-  if (sti < 0 || sti >= STAGES.length || STAGES[sti].sections.length === 0) {
-    sti = 0;
-  }
-  curStageIndex = sti;
-
-  let si = sectionIdx | 0;
-  if (si < 0) {
-    si = 0;
-  }
-  if (si > 1) {
-    si = 1;
-  }
-  const waves = STAGES[curStageIndex].sections[si].waves;
-  let wi = waveIdx | 0;
-  if (wi < 0) {
-    wi = 0;
-  }
-  if (wi >= waves.length) {
-    wi = waves.length - 1;
-  }
-  sectionIndex = si;
-  waveCursor = wi;
-  waveMemberIndex = 0;
-  waveGapTimer = 0;
-  // 開始位置を進めた時点を、そのセクションの起点として扱う(distanceは0から進む)。
-  sectionStartDistance = 0;
-}
-
 export function isAtBossSection() {
   return sectionIndex >= 2;
 }
