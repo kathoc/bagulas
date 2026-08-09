@@ -33,7 +33,7 @@ import {
   TILE16_EXPLOSION_2,
   TILE_BULLET_ENEMY,
 } from './tiles.js';
-import { STAGES, FORMATIONS, OBSTACLE_KINDS, applyLoop } from './stages.js';
+import { STAGES, FORMATIONS, OBSTACLE_KINDS, GATES, applyLoop } from './stages.js';
 
 // 敵種別（ENEMIES.kind に格納する内部enum。0=V, 1=COLUMN, 2=SNAKE）
 const KIND_V = 0;
@@ -57,8 +57,17 @@ const SNAKE_Y_SPACING = f(24); // 蛇行編隊の初期縦間隔
 const SNAKE_STEP = 128; // 振れ幅2倍に合わせてstepも2倍にし、半周期フレーム数をほぼ維持する
 const SNAKE_AMPLITUDE = f(40); // 蛇行の振れ幅。anchorXから±40pxで大きく横へ振る
 const SNAKE_PHASE_STEP = 800; // 蛇行メンバー間の初期位相ずらし
-const WAVE_X_MIN = 24; // 編隊アンカーxの最小値(px)
-const WAVE_X_SPREAD = 97; // rndRangeに渡す範囲（0..96）
+// 出現口(GATES.*)ごとの編隊アンカーx範囲(px)。index は GATES の値と対応する
+// (FRONT_LEFT, FRONT_RIGHT, FRONT_CENTER, BACK_LEFT, BACK_RIGHT)。BACK_AUTOは解決後の値でしか引かない。
+const GATE_X_MIN = [8, 96, 64, 8, 96];
+const GATE_X_SPREAD = [49, 49, 33, 49, 49]; // rndRangeに渡す範囲
+
+// 出現口が背後(下端から追い上げ)かどうか。1=背後。indexはGATES.*と対応
+const GATE_IS_BACK = [0, 0, 0, 1, 1];
+
+const WAVE_GAP_MIN = 90; // ウェーブ間の空き下限(フレーム)
+const WAVE_GAP_SPREAD = 61; // rndRange(61)で0..60を足し、90..150の空きにする
+const SCREEN_CENTER_X = f(80); // 自機の左右寄りを判定する基準(画面幅160の中央)
 
 // 発射間隔の基本値(フレーム)。予備動作(TELEGRAPH_SLOWDOWN_FRAMES=64)より十分長く取る。
 // 90だと1周期90..130フレームのうち64が減速フェーズになり、実測で「減速中の方が長い」状態
@@ -96,6 +105,8 @@ let waveCursor = 0; // 現在セクション内で次にスポーンすべきwav
 let obstacleCursor = 0; // 同様にobstaclesのindex
 let waveMemberIndex = 0; // 現在スポーン中のwaveで、すでにスポーンした体数
 let waveBaseX = 0; // 現在スポーン中のwaveのx基準(8.8)
+let waveGapTimer = 0; // 次のウェーブを開始できるまでの残りフレーム(90〜150)。0になるまで湧かない
+let currentGate = GATES.FRONT_CENTER; // 現在/直前スポーンしたwaveで解決済みの出現口(BACK_AUTOは解決後の値のみ持つ)
 let currentFormationId = 0;
 let nextFormationId = 1;
 let loop = 0; // 周回カウンタ。game.jsのloadStage(0)からsetLoop()で更新される
@@ -129,6 +140,8 @@ export function resetEnemies() {
   obstacleCursor = 0;
   waveMemberIndex = 0;
   waveBaseX = 0;
+  waveGapTimer = 0;
+  currentGate = GATES.FRONT_CENTER;
   currentFormationId = 0;
   nextFormationId = 1;
 
@@ -151,6 +164,7 @@ function advanceSection(distance) {
     waveCursor = 0;
     obstacleCursor = 0;
     waveMemberIndex = 0;
+    waveGapTimer = 0; // 新セクションの最初のウェーブは空き待ちなしで開始する
     localDistance = distance - sectionStartDistance;
   }
 }
@@ -173,56 +187,81 @@ function vOffsetX(memberIndex) {
   return sign * off;
 }
 
-function initEnemyFromWave(e, wave, memberIndex) {
+// BACK_AUTOを実際の出現口へ解決する。背後タイプは原則プレイヤーが居ない側から出すため、
+// 自機が画面中央より右寄りならBACK_LEFT、左寄り(または中央)ならBACK_RIGHTを選ぶ。
+// curPlayerXはupdateEnemies()の先頭で毎フレーム更新済みの値を使う(wave開始フレーム時点のもの)。
+function resolveGate(gate) {
+  if (gate !== GATES.BACK_AUTO) {
+    return gate;
+  }
+  return curPlayerX >= SCREEN_CENTER_X ? GATES.BACK_LEFT : GATES.BACK_RIGHT;
+}
+
+function initEnemyFromWave(e, wave, memberIndex, gate) {
   e.hp = applyLoop(wave.hp, loop);
   e.flags = 0;
   e.atkTimer = FIRE_INTERVAL_BASE + rndRange(FIRE_INTERVAL_JITTER);
   e.formationId = currentFormationId;
   e.timer = 0;
 
+  // 背後出現口は画面下端の外から上へ抜ける(縦速度の符号が逆になる)。前方は従来どおり上端の外から下降する。
+  const back = GATE_IS_BACK[gate] === 1;
+  const vySign = back ? -1 : 1;
+  const edgeY = back ? f(144) : f(-16);
+  // 後続メンバーの入場を時間差にするための積み上げ方向。前方は上端の外側(さらに負)へ、
+  // 背後は下端の外側(さらに正)へ積む。
+  const edgeStep = back ? 1 : -1;
+
   if (wave.formation === FORMATIONS.V) {
     e.kind = KIND_V;
     e.tile = TILE16_ENEMY_A; // 理由: バイク風の細身タイルはV字/蛇行の機敏な編隊に合う
     e.x = waveBaseX + vOffsetX(memberIndex);
-    e.y = f(-16) - vHalfIndex(memberIndex) * V_Y_STEP;
+    e.y = edgeY + edgeStep * vHalfIndex(memberIndex) * V_Y_STEP;
     e.vx = 0;
-    e.vy = ENEMY_VY;
+    e.vy = vySign * ENEMY_VY;
   } else if (wave.formation === FORMATIONS.COLUMN) {
     e.kind = KIND_COLUMN;
     e.tile = TILE16_ENEMY_B; // 理由: 丸い車風の幅広タイルは縦列でどっしり進む見た目に合う
     e.x = waveBaseX;
-    e.y = f(-16) - memberIndex * COLUMN_Y_SPACING;
+    e.y = edgeY + edgeStep * memberIndex * COLUMN_Y_SPACING;
     e.vx = 0;
-    e.vy = ENEMY_VY;
+    e.vy = vySign * ENEMY_VY;
   } else {
     // SNAKE
     e.kind = KIND_SNAKE;
     e.tile = TILE16_ENEMY_A; // V字と同じ機敏な見た目を流用
     e.x = waveBaseX;
-    e.y = f(-16) - memberIndex * SNAKE_Y_SPACING;
+    e.y = edgeY + edgeStep * memberIndex * SNAKE_Y_SPACING;
     e.anchorX = waveBaseX; // 蛇行の振動中心x（専用フィールド）
     e.vx = 0; // SNAKEでは未使用
-    e.vy = ENEMY_VY;
+    e.vy = vySign * ENEMY_VY;
     e.timer = memberIndex * SNAKE_PHASE_STEP; // メンバー間で初期位相をずらし群れがバラける動きにする
   }
 }
 
-// 現在セクションのwavesを距離に応じて1体ずつスポーンする。
+// 現在セクションのwavesを順に、ウェーブ単位でスポーンする。
+// 1ウェーブ=1種類・同一出現口・3〜5機。ウェーブを出しきったら90〜150フレーム(LFSR決定)の
+// 空きを置き、その間は新規のスポーンを行わない。距離(distance)はセクション境界の判定にのみ使い、
+// ウェーブの列自体はテーブルの並び順+フレームベースの空きだけで進む(決定論的)。
 // スプライト予算/プール空きが足りない場合はcursorを進めずそのフレームは諦め、次フレームに再試行する
 // （wave丸ごとスキップはしない。1体ずつ確保できた分だけ進める設計）。
-function spawnPendingWave(distance) {
+function spawnPendingWave() {
   if (sectionIndex >= 2) {
     return;
   }
   const section = STAGES[0].sections[sectionIndex];
   const waves = section.waves;
-  const localDistance = distance - sectionStartDistance;
 
-  while (waveCursor < waves.length && waves[waveCursor].at <= localDistance) {
+  while (waveCursor < waves.length) {
     const wave = waves[waveCursor];
 
     if (waveMemberIndex === 0) {
-      waveBaseX = f(WAVE_X_MIN + rndRange(WAVE_X_SPREAD));
+      if (waveGapTimer > 0) {
+        waveGapTimer -= 1;
+        return; // ウェーブ間の空き時間中。このフレームは何も湧かせない
+      }
+      currentGate = resolveGate(wave.gate);
+      waveBaseX = f(GATE_X_MIN[currentGate] + rndRange(GATE_X_SPREAD[currentGate]));
       currentFormationId = nextFormationId;
       nextFormationId += 1;
     }
@@ -235,13 +274,14 @@ function spawnPendingWave(distance) {
       if (!e) {
         return; // プール満杯。同様に次フレームへ持ち越す
       }
-      initEnemyFromWave(e, wave, waveMemberIndex);
+      initEnemyFromWave(e, wave, waveMemberIndex, currentGate);
       waveMemberIndex += 1;
     }
 
-    // wave丸ごとスポーンし終えたので次のwaveへ
+    // wave丸ごとスポーンし終えたので次のwaveへ。次wave開始前に90〜150フレームの空きを置く
     waveCursor += 1;
     waveMemberIndex = 0;
+    waveGapTimer = WAVE_GAP_MIN + rndRange(WAVE_GAP_SPREAD);
   }
 }
 
@@ -285,7 +325,15 @@ function updateOneEnemy(e) {
   const vy = e.offRoad ? fmul(scaledVy, ENEMY_SPEED_OFFROAD_NUM) : scaledVy;
   e.y += vy;
 
-  if (toPx(e.y) > 160) {
+  // e.vy(生成時定数、書き換えない)の符号で進行方向を見る。前方出現(vy>=0)は下端を抜けたら消え、
+  // 背後出現(vy<0)は上端を抜けたら消える。逆側の判定を入れると、縦列/蛇行の後続メンバーが
+  // 画面外の入場待機位置(まだ側)にいるだけで誤って消えてしまうため、進行方向側のみ見る。
+  if (e.vy >= 0) {
+    if (toPx(e.y) > 160) {
+      e.alive = false;
+      return;
+    }
+  } else if (toPx(e.y) < -16) {
     e.alive = false;
     return;
   }
@@ -379,7 +427,7 @@ export function updateEnemies(distance, playerX, playerY, scrollY, speedRatio, s
   curSpawnFrozen = spawnFrozen;
   if (!spawnFrozen) {
     advanceSection(distance);
-    spawnPendingWave(distance);
+    spawnPendingWave();
   }
   forEach(ENEMIES, updateOneEnemy);
 }

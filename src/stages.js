@@ -17,6 +17,27 @@ export const OBSTACLE_KINDS = Object.freeze({
   CACTUS: { id: 'CACTUS', destructible: true },
 });
 
+// 出現口(5か所)。前3(画面上端から降下) / 後2(画面下端から追い上げ)。
+// BACK_AUTO は「背後タイプは自機が居ない側から出す」ためのプレースホルダで、
+// enemies.js が wave 開始時の自機x座標を見て BACK_LEFT/BACK_RIGHT のどちらかへ解決する。
+export const GATES = Object.freeze({
+  FRONT_LEFT: 0,
+  FRONT_RIGHT: 1,
+  FRONT_CENTER: 2,
+  BACK_LEFT: 3,
+  BACK_RIGHT: 4,
+  BACK_AUTO: 5,
+});
+
+// 敵種別ごとに使える出現口(データとして保持)。「正面のみ」等の性質をここで表現する。
+// 段階3(敵16種実装)で種ごとの正式なセットに拡張していく。現段階は既存3種(V/COLUMN/SNAKE)へ
+// 暫定のセットを与え、5出現口すべてが使われるようにしている。
+export const FORMATION_GATES = Object.freeze({
+  [FORMATIONS.V]: [GATES.FRONT_LEFT, GATES.FRONT_RIGHT, GATES.FRONT_CENTER],
+  [FORMATIONS.COLUMN]: [GATES.FRONT_CENTER],
+  [FORMATIONS.SNAKE]: [GATES.BACK_AUTO],
+});
+
 // 周回ごとの整数倍率適用ヘルパ。
 // baseValue に loop*step を加算するだけの整数演算（float 禁止）。
 // 例: applyLoop(hp, loop)        -> hp + loop
@@ -34,15 +55,18 @@ export function applyLoop(baseValue, loop, step) {
 const STAGE1_PRELUDE_LENGTH = 800;
 const STAGE1_MAIN_LENGTH = 1400;
 
+// waves: 1ウェーブ=1種類・3〜5機・出現口1か所。ウェーブ間の空き(90〜150フレーム)は
+// enemies.js が実行時にLFSRで決めるため、ここでは距離(at)を持たず「順序」だけを表現する。
+// 同じ種類を出現口を変えて数ウェーブ続け、そのあと種類を切り替える並びにしてある。
 const stage1Prelude = {
   type: 'prelude',
   length: STAGE1_PRELUDE_LENGTH,
   waves: [
-    { at: 100, formation: FORMATIONS.V, count: 3, hp: 2 },
-    { at: 240, formation: FORMATIONS.COLUMN, count: 4, hp: 2 },
-    { at: 380, formation: FORMATIONS.SNAKE, count: 5, hp: 1 },
-    { at: 520, formation: FORMATIONS.V, count: 3, hp: 3 },
-    { at: 660, formation: FORMATIONS.COLUMN, count: 4, hp: 2 },
+    { formation: FORMATIONS.V, count: 3, hp: 2, gate: GATES.FRONT_LEFT },
+    { formation: FORMATIONS.V, count: 4, hp: 2, gate: GATES.FRONT_RIGHT },
+    { formation: FORMATIONS.V, count: 3, hp: 2, gate: GATES.FRONT_CENTER },
+    { formation: FORMATIONS.COLUMN, count: 4, hp: 2, gate: GATES.FRONT_CENTER },
+    { formation: FORMATIONS.SNAKE, count: 5, hp: 1, gate: GATES.BACK_AUTO },
   ],
   obstacles: [],
 };
@@ -51,12 +75,13 @@ const stage1Main = {
   type: 'main',
   length: STAGE1_MAIN_LENGTH,
   waves: [
-    { at: 80, formation: FORMATIONS.COLUMN, count: 3, hp: 3 },
-    { at: 300, formation: FORMATIONS.V, count: 4, hp: 3 },
-    { at: 560, formation: FORMATIONS.SNAKE, count: 5, hp: 2 },
-    { at: 820, formation: FORMATIONS.COLUMN, count: 4, hp: 4 },
-    { at: 1080, formation: FORMATIONS.V, count: 5, hp: 4 },
-    { at: 1280, formation: FORMATIONS.SNAKE, count: 4, hp: 3 },
+    { formation: FORMATIONS.V, count: 3, hp: 3, gate: GATES.FRONT_LEFT },
+    { formation: FORMATIONS.V, count: 4, hp: 3, gate: GATES.FRONT_RIGHT },
+    { formation: FORMATIONS.V, count: 3, hp: 4, gate: GATES.FRONT_CENTER },
+    { formation: FORMATIONS.COLUMN, count: 4, hp: 3, gate: GATES.FRONT_CENTER },
+    { formation: FORMATIONS.COLUMN, count: 5, hp: 4, gate: GATES.FRONT_CENTER },
+    { formation: FORMATIONS.SNAKE, count: 4, hp: 2, gate: GATES.BACK_AUTO },
+    { formation: FORMATIONS.SNAKE, count: 5, hp: 3, gate: GATES.BACK_AUTO },
   ],
   obstacles: [
     { at: 150, kind: OBSTACLE_KINDS.ROCK.id, x: 32 },
