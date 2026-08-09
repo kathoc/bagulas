@@ -308,10 +308,11 @@ const DRIFTER_STILL1_FRAMES = 18; // 0.3秒(撃ち込みどころ兼、発射の
 const DRIFTER_STILL2_FRAMES = 18; // 0.3秒
 const DRIFTER_EXIT_FRAMES = 36; // 0.6秒(この後は画面外へ抜けて消える)
 const DRIFTER_STAGGER = 11; // 発生時刻のずらし(1体ごと)
-// 発生位置のずらし(1体ごと)。軌道は発生位置からの相対なので、ここをずらすと入口も出口もずれる。
-// 編隊として散って見せるにはずれていなければならない(通る座標を揃えると1本の列にしかならない)。
-const DRIFTER_SPAWN_X_STEP = f(18);
-const DRIFTER_SPAWN_Y_STEP = f(10); // 縦にもずらす。数フレームの時間差と合わせて散らす
+// 発生位置のずらし(1体ごと)。ずらすのは「登場する辺に沿った方向だけ」(docs/enemies.md)。
+// ドリフターは上から登場するので、yは全機同じ(外周+16で固定)にし、xだけをずらす。
+// yもずらすと機ごとに画面へ入る深さが変わり、進入の見え方が揃わなくなる。
+// 横一線に見えるのは発生の時間差(DRIFTER_STAGGER)で崩す。
+const DRIFTER_SPAWN_X_STEP = f(22);
 // 縦: 初速VY0から36フレームで0まで落とす。降下量は平均速度×時間 = VY0*36/512 ≒ 86px。
 // スポーンy=-16から止まるのはy≒70で、仕様どおり「画面中央あたり」になる。
 // 1223 - 34*36 = -1 ≒ 0 なので、36フレーム目でちょうど頂点(速度0)に着く。
@@ -671,7 +672,9 @@ function edgeParamsForGate(gate) {
   const back = GATE_IS_BACK[gate] === 1;
   return {
     vySign: back ? -1 : 1,
-    edgeY: back ? f(144) : f(-16),
+    // 発生位置は画面の外周+16ドット(docs/enemies.md)。上からはy=-16、下からはy=144+16=160。
+    // スプライト16pxぶん完全に画面外に置く。
+    edgeY: back ? f(160) : f(-16),
     // 後続メンバーの入場を時間差にするための積み上げ方向。前方は上端の外側(さらに負)へ、
     // 背後は下端の外側(さらに正)へ積む。
     edgeStep: back ? 1 : -1,
@@ -708,7 +711,7 @@ function initDrifter(e, wave, memberIndex, gate) {
   // 発生位置のずらし。並びはこれだけで作る(スクリプト側は全機同一)。
   const dir = gate === GATES.FRONT_RIGHT ? -1 : 1; // 登場位置の反対側へ向かう向き
   e.x = waveBaseX - dir * memberIndex * DRIFTER_SPAWN_X_STEP;
-  e.y = edgeY - memberIndex * DRIFTER_SPAWN_Y_STEP;
+  e.y = edgeY; // 登場する辺に垂直な軸はずらさない(全機同じ深さから入る)
   // 発生時刻のずらし。負の間はまだ走り出していない(発生位置は画面外なので見えない)。
   e.localFrame = -memberIndex * DRIFTER_STAGGER;
   // スクリプトの初速。全機まったく同じ値(向きだけ出現口で決まる)。
@@ -1383,7 +1386,11 @@ function updateOneEnemy(e) {
   // 決定事項: ドリフター蛇行フェーズの横方向(timerベース)は複雑化を避けて非スケール対象のままとし、
   // 「移動速度2/3」・「自機死亡演出中のスクロール速度比」は支配的な縦方向の進行(vy)にのみ適用する。
   let scaledVy = fmul(e.vy, curEnemySpeedRatio); // 自機死亡演出中〜復活の間、世界全体を一緒にスローにする
-  if (e.atkTimer <= TELEGRAPH_SLOWDOWN_FRAMES) {
+  // 旧方式(atkTimerベース)の予備動作減速。スクリプト種には掛けない —— 予備動作は
+  // スクリプト側の「静止」フェーズそのもので表現しており、ここで別途減速すると
+  // 個体ごとにatkTimerの位相が違うぶん速度が変わり、「全機まったく同じ軌道」が崩れる
+  // (実測: 離脱の開始が個体ごとに3フレームずれ、相対軌道が2種類に割れていた)。
+  if (!ENEMY_SCRIPTED_BY_KIND[e.kind] && e.atkTimer <= TELEGRAPH_SLOWDOWN_FRAMES) {
     scaledVy = fmul(scaledVy, TELEGRAPH_SLOWDOWN_NUM);
   }
   const vy =
