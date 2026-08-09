@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BAGULAS 敵の動き(振り付け)デモ</title>
+<style>
+  :root { --bg:#0f380f; --panel:#163f16; --line:#2b5a2b; --ink:#9bbc0f; --dim:#7a9a2a; --accent:#c6de6a; }
+  * { box-sizing: border-box; }
+  body {
+    margin:0; padding:24px 16px 64px; background:var(--bg); color:var(--ink);
+    font-family: ui-monospace, Menlo, Consolas, monospace; line-height:1.7;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  h1 { font-size:1.4rem; margin:0 0 4px; letter-spacing:.08em; }
+  .lead { color:var(--dim); font-size:.85rem; margin:0 0 20px; }
+  .lead a { color: var(--accent); }
+  .stage { display:flex; gap:20px; flex-wrap:wrap; align-items:flex-start; }
+  canvas#screen {
+    image-rendering: pixelated; background:#8bac0f;
+    border:2px solid var(--line); border-radius:4px; width:640px; max-width:100%; height:auto;
+  }
+  .side { flex:1; min-width:260px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  button {
+    font:inherit; font-size:.8rem; padding:5px 10px; cursor:pointer;
+    background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:4px;
+  }
+  button.on { background:var(--ink); color:var(--bg); border-color:var(--ink); }
+  .phases { list-style:none; margin:0 0 14px; padding:0; font-size:.8rem; }
+  .phases li { padding:4px 8px; border-left:3px solid transparent; color:var(--dim); }
+  .phases li.now { border-left-color:var(--accent); color:var(--accent); background:var(--panel); }
+  .phases b { color:var(--ink); }
+  .bar { height:6px; background:var(--panel); border-radius:3px; overflow:hidden; margin-bottom:14px; }
+  .bar i { display:block; height:100%; background:var(--accent); width:0; }
+  .note { font-size:.76rem; color:var(--dim); border-left:2px solid var(--line); padding-left:10px; }
+  .meta { font-size:.75rem; color:var(--dim); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>BAGULAS 敵の動き(振り付け)</h1>
+  <p class="lead">実装前の設計確認用。動きは「傾向」ではなく<strong>時間で区切られたフェーズ列</strong>として定義する。
+  仕様は <a href="https://github.com/kathoc/bagulas/blob/main/docs/enemies.md">docs/enemies.md</a>。
+  グラフィックはゲームで使っている実データ。</p>
+
+  <div class="stage">
+    <canvas id="screen" width="160" height="144"></canvas>
+    <div class="side">
+      <div class="row" id="picker"></div>
+      <div class="bar"><i id="bar"></i></div>
+      <ul class="phases" id="phases"></ul>
+      <p class="meta" id="meta"></p>
+      <p class="note" id="note"></p>
+    </div>
+  </div>
+</div>
+
+<script>
+const ART = {"player_buggy":{"w":16,"h":16,"data":[4,4,4,4,4,4,1,0,0,0,4,4,4,4,4,4,4,4,1,1,4,1,3,0,0,0,0,4,1,1,4,4,4,2,2,3,3,3,2,0,0,2,3,3,3,2,1,4,4,3,2,3,3,3,2,0,0,2,3,3,3,2,2,4,4,3,2,3,3,3,3,1,2,3,3,3,3,2,2,4,4,2,3,3,3,3,3,3,3,3,3,3,3,3,0,4,4,4,4,4,3,3,3,3,3,3,3,1,4,4,4,4,4,4,4,4,3,3,3,2,3,3,3,3,4,4,4,4,4,4,4,4,3,3,3,2,3,3,3,3,4,4,4,4,4,4,4,1,3,3,3,2,3,3,3,3,4,4,4,4,4,3,3,3,3,3,3,0,3,3,3,3,3,3,3,4,0,3,3,3,3,3,3,3,3,3,3,3,3,2,3,4,0,3,3,3,3,3,3,3,3,3,3,3,3,2,3,4,4,3,3,3,3,3,3,3,3,3,3,3,3,2,3,4,4,3,3,3,3,3,3,3,3,3,3,3,3,2,2,4,4,4,4,4,4,4,0,2,2,4,4,4,4,4,4,4]},"enemy_drifter":{"w":16,"h":16,"data":[4,0,1,1,4,0,0,4,4,0,4,4,1,1,0,4,0,3,3,3,1,1,1,3,3,1,1,1,3,3,3,0,1,3,3,3,2,1,1,1,1,1,2,2,3,3,3,1,2,3,3,3,2,2,2,2,2,2,2,2,3,3,3,2,2,3,3,3,3,2,2,2,2,2,3,3,3,3,3,2,2,3,3,3,3,3,2,3,3,2,3,3,3,3,3,2,1,3,3,3,3,3,3,3,3,2,3,3,3,3,3,1,4,2,3,2,2,2,2,3,3,2,3,2,2,3,2,4,4,4,4,4,1,2,2,3,3,2,2,0,4,4,4,4,4,4,4,4,0,3,2,3,3,1,3,4,4,4,4,4,4,4,4,4,4,3,0,2,2,0,3,4,4,4,4,4,4,4,4,4,4,1,1,0,0,2,0,4,4,4,4,4,4,4,4,3,2,2,2,0,0,2,2,2,3,4,4,4,4,4,4,3,3,3,3,1,2,3,3,3,3,4,4,4,4,4,4,3,2,0,2,3,3,2,0,3,3,4,4,4,4,4,4,4,4,4,4,2,2,4,4,4,4,4,4,4]},"enemy_scatter":{"w":16,"h":16,"data":[4,4,4,4,4,4,4,0,0,0,4,4,4,4,4,4,4,4,4,4,4,2,3,0,0,3,3,1,0,4,4,4,4,4,4,0,3,1,2,0,0,3,3,3,3,1,4,4,4,4,4,3,3,0,2,1,2,3,0,3,3,3,1,4,4,4,2,2,3,2,2,3,3,3,3,3,3,2,2,4,4,0,3,2,1,2,2,3,3,3,3,3,3,3,2,1,4,2,3,3,3,1,2,2,2,2,3,3,3,3,3,2,4,1,1,1,3,3,2,3,3,3,3,3,3,1,2,2,4,2,3,3,3,3,2,3,3,3,3,3,3,3,3,2,4,1,3,3,3,3,3,3,3,3,2,2,3,3,2,2,4,4,3,3,3,3,3,3,3,2,3,3,3,2,1,0,4,4,2,3,3,2,2,2,2,2,1,3,3,2,1,4,4,4,4,3,3,0,3,2,2,3,3,3,3,1,0,4,4,4,4,4,2,2,3,2,2,3,3,2,1,2,4,4,4,4,4,4,0,1,2,2,2,2,1,1,1,4,4,4,4,4,4,4,4,1,1,0,0,1,1,4,4,4,4,4]},"enemy_reaper":{"w":16,"h":16,"data":[4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,0,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,0,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,0,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,0,4,4,4,4,4,4,4,4,4,4,4,4,4,1,2,2,1,4,4,4,4,4,4,4,4,4,4,4,4,3,3,3,3,4,4,4,4,4,4,4,4,4,4,4,4,2,3,3,2,4,4,4,4,4,4,4,4,4,4,4,4,2,3,3,2,4,4,4,4,4,4,4,4,4,4,4,4,3,3,3,3,4,4,4,4,4,4,4,4,4,4,4,4,1,1,1,1,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4]},"enemy_hopper":{"w":16,"h":16,"data":[4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,2,0,4,4,4,4,1,2,4,4,4,4,4,4,4,4,0,0,0,4,4,1,1,0,4,4,4,4,4,4,4,4,4,4,2,1,1,1,4,4,4,4,4,4,4,4,4,4,4,4,1,3,3,0,4,4,4,4,4,4,4,4,4,4,4,4,1,3,3,0,4,4,4,4,4,4,4,4,4,4,4,4,1,1,1,2,4,4,4,4,4,4,4,4,4,4,4,2,1,4,4,1,2,4,4,4,4,4,4,4,4,4,4,1,4,4,4,4,1,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4]},"enemy_gunwagon":{"w":16,"h":16,"data":[4,4,4,4,4,4,4,2,0,4,4,4,4,4,4,4,4,4,4,0,1,0,0,1,2,0,1,1,4,0,4,4,4,1,4,4,3,3,2,0,2,2,2,2,4,4,1,4,4,2,3,3,2,2,2,1,3,2,2,2,3,3,2,4,4,3,3,3,2,2,3,1,3,2,2,2,2,3,2,4,4,3,2,3,3,3,3,0,3,3,3,3,3,3,2,4,4,1,2,3,3,3,3,1,3,3,3,3,3,2,4,4,4,2,2,3,3,3,3,0,3,3,3,3,3,2,1,4,4,2,2,3,3,3,2,2,3,3,3,2,3,3,2,4,4,3,3,3,3,3,2,3,3,3,3,2,3,3,2,4,4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,0,3,3,3,3,3,3,3,3,3,2,2,3,3,3,4,0,3,2,3,2,2,3,3,3,3,2,2,3,2,2,4,4,3,2,3,2,3,3,2,2,2,3,3,3,2,2,4,4,4,1,4,0,0,4,0,0,0,0,4,0,1,4,4]},"enemy_sidecar":{"w":16,"h":16,"data":[4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,1,0,4,4,4,4,4,4,4,4,4,4,4,4,4,0,2,1,4,4,4,4,4,4,4,4,0,1,1,0,0,2,3,1,1,4,4,4,4,4,4,4,2,3,3,3,1,2,3,1,4,4,4,4,4,4,4,1,3,3,3,3,2,2,3,1,4,4,4,4,4,4,4,1,3,1,1,3,1,0,3,1,4,4,4,4,4,4,4,0,3,2,2,3,1,1,2,2,4,4,4,4,4,4,4,1,3,3,3,3,2,2,3,2,4,4,4,4,4,4,4,4,2,3,3,3,4,0,3,1,4,4,4,4,4,4,4,4,0,4,4,0,4,4,1,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4]}};
+const PALETTE = ['#9bbc0f', '#8bac0f', '#306230', '#0f380f'];
+const W = 160, H = 144;
+
+const cv = document.getElementById('screen');
+const ctx = cv.getContext('2d');
+
+function blit(a, px, py, flash) {
+  if (!a) return;
+  px = Math.round(px); py = Math.round(py);
+  for (let y = 0; y < a.h; y++) {
+    for (let x = 0; x < a.w; x++) {
+      const v = a.data[y * a.w + x];
+      if (v === 4) continue;
+      ctx.fillStyle = PALETTE[flash ? 3 - v : v];
+      ctx.fillRect(px + x, py + y, 1, 1);
+    }
+  }
+}
+
+// 補間は線形。フェーズの境目をはっきり見せたいので、イージングは掛けない。
+const lerp = (a, b, t) => a + (b - a) * t;
+
+// --- 振り付けの定義 -------------------------------------------------
+// each: { phases:[{name,label,dur}], place(member, phase, t, ctx) -> {x,y}, fireAt }
+// dur はフレーム数(60fps)。docs/enemies.md の表と一致させる。
+
+const DEFS = {
+  drifter: {
+    name: 'ドリフター', count: 4, art: 'enemy_drifter',
+    note: '基準となる形。止まる→撃つ→止まる→帰る の4拍。中央で止まる0.5秒が撃ち込みどころであり、同時に発射の警告でもある。',
+    phases: [
+      { label: '進入 1.0秒 — 左上/右上から編隊で画面中央へ', dur: 60 },
+      { label: '静止 0.5秒 — 完全に止まる(予備動作)', dur: 30 },
+      { label: '発射 — 自機へ1撃', dur: 6 },
+      { label: '静止 0.5秒 — 完全に止まる', dur: 30 },
+      { label: '離脱 — 登場と逆の斜め上へV字で戻る', dur: 70 },
+    ],
+    fireAt: 2,
+    place(i, ph, t, side) {
+      // 編隊: 横に4機、わずかにV字。side = -1(左上から) / +1(右上から)
+      const ox = (i - 1.5) * 18;
+      const oy = Math.abs(i - 1.5) * 6;
+      const sx = side < 0 ? -40 : W + 24, sy = -24;
+      const cx = 72 + ox, cy = 52 + oy;
+      if (ph === 0) return { x: lerp(sx + ox, cx, t), y: lerp(sy + oy, cy, t) };
+      if (ph === 1 || ph === 2 || ph === 3) return { x: cx, y: cy };
+      // 離脱: 逆側の斜め上へ。外側の機ほど横に開いてV字を描く
+      const spread = (side < 0 ? 1 : -1) * (i - 1.5) * 10;
+      const ex = cx + (side < 0 ? 1 : -1) * 130 + spread * t;
+      const ey = cy - 120;
+      return { x: lerp(cx, ex, t), y: lerp(cy, ey, t * t) };
+    },
+  },
+  scatter: {
+    name: 'スキャッター', count: 5, art: 'enemy_scatter',
+    note: '攻撃を持たない。中央で短く止まってから左右に分かれ、画面のサイドへ抜ける。',
+    phases: [
+      { label: '進入 1.0秒 — 編隊のまま中央へ', dur: 60 },
+      { label: '静止 0.3秒', dur: 18 },
+      { label: '離脱 — 左右に分かれて画面サイドへ', dur: 70 },
+    ],
+    fireAt: -1,
+    place(i, ph, t, side) {
+      const ox = (i - 2) * 16, oy = Math.abs(i - 2) * 8;
+      const cx = 72 + ox, cy = 48 + oy;
+      if (ph === 0) return { x: lerp(cx, cx, t), y: lerp(-24 + oy, cy, t) };
+      if (ph === 1) return { x: cx, y: cy };
+      const dir = i < 2 ? -1 : (i > 2 ? 1 : side);
+      return { x: lerp(cx, cx + dir * 140, t), y: cy + t * 30 };
+    },
+  },
+  reaper: {
+    name: 'リーパー', count: 5, art: 'enemy_reaper',
+    note: '止まらない。斜めに横切って抜けるだけ。滞在が短く、抜けきる前に倒すのが得点源。',
+    phases: [{ label: '横断 0.8秒 — 斜めに通過して反対サイドへ', dur: 110 }],
+    fireAt: -1,
+    place(i, ph, t, side) {
+      const lead = i * 14;
+      const sx = side < 0 ? -30 - lead : W + 14 + lead;
+      const ex = side < 0 ? W + 30 : -30;
+      return { x: lerp(sx, ex, t), y: lerp(-20 - lead * 0.6, H + 10, t) };
+    },
+  },
+  hopper: {
+    name: 'ホッパー', count: 3, art: 'enemy_hopper',
+    note: '跳躍と着地硬直の繰り返し。着地の0.5秒が撃ち込みどころで、3回目の着地で撃ってくる。',
+    phases: [
+      { label: '跳躍1 0.5秒', dur: 30 }, { label: '着地硬直 0.5秒', dur: 30 },
+      { label: '跳躍2 0.5秒', dur: 30 }, { label: '着地硬直 0.5秒', dur: 30 },
+      { label: '跳躍3 0.5秒', dur: 30 }, { label: '着地硬直 — 真下へ1撃', dur: 30 },
+      { label: '離脱 — 斜め上へ戻る', dur: 60 },
+    ],
+    fireAt: 5,
+    place(i, ph, t, side) {
+      const ox = (i - 1) * 34, cx = 72 + ox;
+      const ys = [-16, 16, 16, 52, 52, 88, 88];
+      if (ph === 6) return { x: lerp(cx, cx + side * 90, t), y: lerp(88, -40, t * t) };
+      if (ph % 2 === 1) return { x: cx, y: ys[ph] };          // 着地して静止
+      const y0 = ys[ph], y1 = ys[ph + 1] ?? 88;
+      return { x: cx, y: lerp(y0, y1, t) - Math.sin(t * Math.PI) * 22 }; // 放物線
+    },
+  },
+  gunwagon: {
+    name: 'ガンワゴン', count: 3, art: 'enemy_gunwagon',
+    note: '画面上部に停留して撃つ。降りてこない。2〜3回撃ったら反転上昇で離脱する。',
+    phases: [
+      { label: '進入 0.8秒 — 画面上部へ', dur: 48 },
+      { label: '予備 0.5秒 — 砲身が向く', dur: 30 }, { label: '発射1', dur: 6 },
+      { label: '滑走 0.5秒 — 左右へ', dur: 30 },
+      { label: '予備 0.5秒', dur: 30 }, { label: '発射2', dur: 6 },
+      { label: '離脱 — 反転上昇', dur: 50 },
+    ],
+    fireAt: 2,
+    fireAt2: 5,
+    place(i, ph, t, side) {
+      const ox = (i - 1) * 40, cx = 60 + ox;
+      if (ph === 0) return { x: cx, y: lerp(-20, 12, t) };
+      if (ph === 3) return { x: cx + side * 16 * t, y: 12 };
+      if (ph >= 4 && ph <= 5) return { x: cx + side * 16, y: 12 };
+      if (ph === 6) return { x: cx + side * 16, y: lerp(12, -40, t * t) };
+      return { x: cx, y: 12 };
+    },
+  },
+  sidecar: {
+    name: 'サイドカー', count: 4, art: 'enemy_sidecar',
+    note: '左右へ1往復してから、移動先を狙って投げる。止まっていると当たる。',
+    phases: [
+      { label: '進入 1.0秒 — 中央へ', dur: 60 },
+      { label: '往復 1.0秒 — 左右へ大きく', dur: 60 },
+      { label: '発射 — 移動先狙い', dur: 6 },
+      { label: '離脱 — 逆側の斜め上へ', dur: 60 },
+    ],
+    fireAt: 2,
+    place(i, ph, t, side) {
+      const ox = (i - 1.5) * 20, cx = 72 + ox, cy = 56;
+      if (ph === 0) return { x: cx, y: lerp(-24, cy, t) };
+      if (ph === 1) return { x: cx + Math.sin(t * Math.PI * 2) * 34 * side, y: cy };
+      if (ph === 2) return { x: cx, y: cy };
+      return { x: lerp(cx, cx - side * 120, t), y: lerp(cy, -40, t * t) };
+    },
+  },
+};
+
+// --- 再生 -----------------------------------------------------------
+let cur = 'drifter', frame = 0, side = -1, bullets = [];
+const player = { x: 72, y: 108 };
+
+function def() { return DEFS[cur]; }
+function total() { return def().phases.reduce((s, p) => s + p.dur, 0) + 40; }
+
+function phaseAt(f) {
+  let acc = 0;
+  const ps = def().phases;
+  for (let i = 0; i < ps.length; i++) {
+    if (f < acc + ps[i].dur) return { i, t: (f - acc) / ps[i].dur };
+    acc += ps[i].dur;
+  }
+  return { i: ps.length - 1, t: 1 };
+}
+
+function reset() {
+  frame = 0; bullets = []; side = -side;
+  const d = def();
+  document.getElementById('note').textContent = d.note;
+  document.getElementById('phases').innerHTML =
+    d.phases.map((p, i) => '<li data-i="' + i + '"><b>' + (i + 1) + '.</b> ' + p.label + '</li>').join('');
+  for (const b of document.querySelectorAll('#picker button')) b.classList.toggle('on', b.dataset.k === cur);
+}
+
+function step() {
+  const d = def();
+  const { i: ph, t } = phaseAt(frame);
+
+  // 発射フェーズの頭で1発だけ出す
+  if ((ph === d.fireAt || ph === d.fireAt2) && frame > 0) {
+    const prev = phaseAt(frame - 1).i;
+    if (prev !== ph) {
+      for (let m = 0; m < d.count; m++) {
+        const p = d.place(m, ph, 0, side);
+        const dx = player.x - p.x, dy = player.y - p.y;
+        const len = Math.hypot(dx, dy) || 1;
+        bullets.push({ x: p.x + 6, y: p.y + 10, vx: dx / len * 1.6, vy: dy / len * 1.6 });
+      }
+    }
+  }
+
+  ctx.fillStyle = PALETTE[1];
+  ctx.fillRect(0, 0, W, H);
+  // 路面の目印(スクロールしている感じだけ出す)
+  ctx.fillStyle = PALETTE[0];
+  for (let y = (frame * 1) % 16 - 16; y < H; y += 16) { ctx.fillRect(28, y, 2, 8); ctx.fillRect(130, y, 2, 8); }
+
+  blit(ART.player_buggy, player.x - 8, player.y);
+
+  const flash = (ph === d.fireAt || ph === d.fireAt2) ? (frame % 4 < 2) : false;
+  for (let m = 0; m < d.count; m++) {
+    const p = d.place(m, ph, t, side);
+    blit(ART[d.art], p.x - 8, p.y - 8, flash);
+  }
+
+  ctx.fillStyle = PALETTE[3];
+  for (const b of bullets) { b.x += b.vx; b.y += b.vy; ctx.fillRect(Math.round(b.x), Math.round(b.y), 3, 3); }
+  bullets = bullets.filter((b) => b.y < H + 8 && b.x > -8 && b.x < W + 8);
+
+  for (const li of document.querySelectorAll('#phases li')) li.classList.toggle('now', Number(li.dataset.i) === ph);
+  document.getElementById('bar').style.width = (frame / total() * 100) + '%';
+  document.getElementById('meta').textContent =
+    d.name + ' / ' + d.count + '機 / 出現: ' + (side < 0 ? '左上' : '右上') + ' / frame ' + frame + ' / 全' + total() + 'f';
+
+  if (++frame >= total()) reset();
+}
+
+document.getElementById('picker').innerHTML =
+  Object.keys(DEFS).map((k) => '<button data-k="' + k + '">' + DEFS[k].name + '</button>').join('');
+document.getElementById('picker').addEventListener('click', (e) => {
+  const k = e.target.dataset?.k;
+  if (k) { cur = k; side = 1; reset(); }
+});
+
+reset();
+setInterval(step, 1000 / 60);
+</script>
+</body>
+</html>
