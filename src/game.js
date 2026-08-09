@@ -82,6 +82,12 @@ const ENTRY_START_Y = 160;
 // 32px差を約11フレームで詰めてテンポよく終える。
 const ENTRY_RISE_SPEED = f(3);
 
+// --- ステージ終了(ボス撃破後)の「自機が直進して画面上端から出ていく」演出(docs/spec.md「ステージの出入り」
+// 「ボス撃破の演出」5)。ENTRY_RISE_SPEEDと対になる退場速度。退場中は入力を一切受け付けない。 ---
+const EXIT_RISE_SPEED = f(3);
+// EXIT_OFFSCREEN_Y: 自機16x16の下端(y+16)が画面上端(0)より上に出た時点で「完全に画面外」と見なす。
+const EXIT_OFFSCREEN_Y = f(-16);
+
 const EFFECT_DURATION = 12; // エフェクト（爆発等）の表示フレーム数
 const EXPLOSION_TILE_SWAP_INTERVAL = 4; // 敵撃破爆発のtile差し替え間隔(フレーム)
 
@@ -129,6 +135,7 @@ let clearTimer = 0; // CLEAR表示の残フレーム
 
 let playerInvuln = 0; // 残り無敵フレーム
 let playerEntering = false; // ステージ開始時の「画面下から自動でせり上がる」演出中か(死亡復活時は使わない)
+let playerExiting = false; // ボス撃破後、STATE.CLEARで「自機が直進して画面上端から出ていく」退場中か。true中は入力を受け付けない
 let playerOffRoad = false; // 直近フレームでオフロード判定だったか（速度2/3・揺れ・煙に使用。毎フレーム再計算）
 let shotCooldown = 0; // オート連射のクールダウン残フレーム（5フレームで秒間約12発）
 
@@ -151,6 +158,7 @@ function resetPlayerState() {
   playerX = f(72);
   playerY = f(ENTRY_START_Y); // 画面下の外から登場(docs/spec.md「ステージの出入り」)
   playerEntering = true;
+  playerExiting = false;
   paused = false;
   playerInvuln = PLAYER_INVULN_FRAMES; // 無敵点滅で始まり180フレームで解除
   playerOffRoad = false;
@@ -212,7 +220,25 @@ export function initGame() {
 // stageIdx(第4引数、省略可): 段階3グループ2(ホッパー/サンドワーム/サイドカー/マザー)を
 // STAGES[1](ジャングル)から検証するための追加パラメータ。省略時は0(荒野)のままなので、
 // 既存の3引数呼び出し(ステージ1の検証)は一切挙動が変わらない。
+// sectionIdx>=2はSTAGES[..].sectionsのボスセクションを指す。startAtWave()自体は前哨戦/本編
+// (0/1)しか受け付けないため、ボス撃破演出(docs/spec.md「ボス撃破の演出」)を検証する経路として
+// ここで直接ボス戦を開始する。通常プレイ(sectionIdx<2)の既存挙動は一切変えない。
 export function startPlayAt(sectionIdx, waveIdx, invulnFrames, stageIdx) {
+  if ((sectionIdx | 0) >= 2) {
+    distance = 0;
+    resetPlayerState();
+    stageIndex = stageIdx || 0;
+    setLoop(loop);
+    resetEnemies();
+    clearEnemies();
+    forEach(OBSTACLES, killObstacleSlot);
+    startBoss(loop);
+    gameState = STATE.BOSS;
+    if (invulnFrames > 0) {
+      playerInvuln = invulnFrames;
+    }
+    return;
+  }
   gameState = STATE.PLAY;
   startAtWave(sectionIdx, waveIdx, stageIdx || 0);
   if (invulnFrames > 0) {
@@ -320,6 +346,14 @@ function updatePlayerMove(scrollY) {
   } else {
     playerY = clamp(playerY, f(Y_MIN), f(Y_MAX));
   }
+}
+
+// ボス撃破後のステージクリア退場(docs/spec.md「ボス撃破の演出」5)。入力は一切読まず、
+// x座標は退場開始時のまま固定してyだけ画面上端の外まで一定速度で上昇させる「直進」にする。
+// 既存の自弾は消えるまで動かし続ける(新規発射はしない=updateBullets()のみ呼ぶ)。
+function updatePlayerExit() {
+  updateBullets();
+  playerY -= EXIT_RISE_SPEED;
 }
 
 // 自機の爆発エフェクトを1個確保する。enemies.jsのspawnEnemyExplosion()と同じ見た目(小→大→散の
@@ -751,6 +785,7 @@ function updateDebugHook() {
   hook.playerY = playerY; // 可動範囲(Y_MIN..Y_MAX)と登場演出の実測に使う(観測専用)
   hook.playerInvuln = playerInvuln;
   hook.playerEntering = playerEntering;
+  hook.playerExiting = playerExiting; // ボス撃破後の退場中か(観測専用)
   hook.playerStun = playerStun; // 障害物拘束の残フレーム(観測専用)
 }
 
@@ -773,11 +808,23 @@ export function updateGame(scrollY) {
   }
 
   if (gameState === STATE.CLEAR) {
-    clearTimer -= 1;
-    if (clearTimer <= 0) {
-      advanceStage();
+    // docs/spec.md「ボス撃破の演出」4-5: STAGE CLEARメッセージ表示中(退場が始まるまで)は
+    // 自機を通常どおり操作できる。clearTimerが尽きたら退場(playerExiting)へ切り替え、
+    // 以降は入力を受け付けず自機を直進で画面上端の外まで押し出す。
+    if (!playerExiting) {
+      updatePlayerCommon(scrollY);
+      clearTimer -= 1;
+      if (clearTimer <= 0) {
+        playerExiting = true;
+      }
+    } else {
+      updatePlayerExit();
+      if (playerY <= EXIT_OFFSCREEN_Y) {
+        playerExiting = false;
+        advanceStage();
+      }
     }
-    return; // CLEAR中はプレイヤー側ロジックを行わない
+    return; // CLEAR中は敵/障害物/ボス側のロジックを行わない(自機側は上で処理済み)
   }
 
   // 以降 PLAY / BOSS 共通: ポーズ切替はポーズ中でも判定する（Enterトリガのみ）
@@ -882,6 +929,9 @@ export function drawGame() {
   }
 
   if (gameState === STATE.CLEAR) {
+    // 退場中(playerExiting)はyが画面外(負値)へ進んでいくが、pushMeta16/blitは範囲外を
+    // クリップして描くだけなので、ここで可視判定を別途行う必要はない(登場演出と同じ扱い)。
+    pushMeta16(toPx(playerX), toPx(playerY), TILE16_PLAYER, 0, false);
     const clearMsg = 'STAGE CLEAR';
     drawText(80 - clearMsg.length * 2, 68, clearMsg); // 4px等幅グリフなので中央寄せ
     return;

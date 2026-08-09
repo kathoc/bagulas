@@ -7,14 +7,22 @@ import { pushMeta16, spriteBudgetLeft } from './gfx.js';
 import { TILE16_BOSS_TL, TILE16_BOSS_TR, TILE16_BOSS_BL, TILE16_BOSS_BR } from './tiles.js';
 import { applyLoop } from './stages.js';
 import { ENEMY_BULLET_TILE, EFFECT_KIND_ENEMY_EXPLOSION, ENEMY_EXPLOSION_TILES } from './enemies.js';
+import { rndRange } from './rng.js';
 
 export const BOSS_MAX_HP = 40;
 export const BOSS_SCORE_VALUE = 3000;
 export const BOSS_SIZE = f(32);
 
 const BOSS_HIT_FLASH_FRAMES = 2; // 被弾時の白フラッシュ表示フレーム数（enemies.jsのHIT_FLASH_FRAMESと同値だが未エクスポートのためローカル定義）
-const BOSS_DEATH_FRAMES = 32; // 撃破演出の合計フレーム数
-const BOSS_EXPLOSION_INTERVAL = 8; // 撃破演出で爆発を発生させる間隔（4回×8フレーム=32フレーム）
+
+// 撃破演出(docs/spec.md「ボス撃破の演出」)のタイムライン:
+//   1. 3秒(180フレーム)のあいだ、位置をばらした小爆発を連続発生させる
+//   2. その直後に大きな爆発(4象限同時)を1回発生させる
+//   3. 大爆発から0.8秒(48フレーム)後にボスが消える(active=false)
+const BOSS_SMALL_EXPLOSION_PHASE_FRAMES = 180; // 3秒
+const BOSS_SMALL_EXPLOSION_INTERVAL = 12; // EFFECT_DURATION(game.js)と同値にして常に1個は見える間隔にする
+const BOSS_SMALL_EXPLOSION_SCATTER = 24; // 小爆発の位置をばらす範囲(px)。32x32ボディへ重なる程度に収める
+const BOSS_BIG_EXPLOSION_DELAY_FRAMES = 48; // 大爆発からボス消滅までの間隔(0.8秒)
 
 const BOSS_DESCEND_VY = f(1); // 登場時に画面内へ降りてくる速度
 const BOSS_HOVER_Y = f(16); // 降下が止まる高さ
@@ -61,8 +69,9 @@ const boss = {
   burstIndex: 0, // 自機狙い連射パターンで、現バースト内の発射済み数
   burstTimer: 0,
   flashTimer: 0, // 被弾フラッシュの残フレーム
-  dyingTimer: 0, // 撃破演出の残フレーム
-  explosionStep: 0, // 撃破演出で次に出す爆発の位置(0..3)
+  deathElapsed: 0, // 撃破演出開始からの経過フレーム数(0から加算)
+  bigExplosionDone: false, // 大爆発を発生させ済みか(1回だけ発生させるためのフラグ)
+  bigExplosionFrame: 0, // 大爆発を発生させたdeathElapsedの値(そこから正確に48フレーム後に消す)
 };
 
 let started = false; // startBoss()が一度でも呼ばれたか。isBossDone()の判定に使う
@@ -98,8 +107,9 @@ export function startBoss(loop) {
   boss.burstIndex = 0;
   boss.burstTimer = FAN_FIRE_INTERVAL;
   boss.flashTimer = 0;
-  boss.dyingTimer = 0;
-  boss.explosionStep = 0;
+  boss.deathElapsed = 0;
+  boss.bigExplosionDone = false;
+  boss.bigExplosionFrame = 0;
   started = true;
 }
 
@@ -191,14 +201,13 @@ function switchPattern() {
   }
 }
 
-function spawnBossExplosionAt(step) {
-  const off = BOSS_EXPLOSION_OFFSETS[step];
+function spawnBossExplosionAt(dx, dy) {
   const eff = spawn(EFFECTS);
   if (!eff) {
     return;
   }
-  eff.x = boss.x + off.dx;
-  eff.y = boss.y + off.dy;
+  eff.x = boss.x + dx;
+  eff.y = boss.y + dy;
   eff.vx = 0;
   eff.vy = 0;
   eff.hp = 0;
@@ -209,13 +218,36 @@ function spawnBossExplosionAt(step) {
   eff.radius = 0;
 }
 
-function updateDying() {
-  boss.dyingTimer -= 1;
-  if (boss.explosionStep < 4 && boss.dyingTimer % BOSS_EXPLOSION_INTERVAL === 0) {
-    spawnBossExplosionAt(boss.explosionStep);
-    boss.explosionStep += 1;
+// 小爆発: 位置をLFSRでばらしながら連続発生させる(docs/spec.md「ボス撃破の演出」1)。
+// 配列やオブジェクトリテラルは生成しない(rndRangeの戻り値をそのままオフセットに使う)。
+function spawnBossSmallExplosion() {
+  const dx = f(rndRange(BOSS_SMALL_EXPLOSION_SCATTER));
+  const dy = f(rndRange(BOSS_SMALL_EXPLOSION_SCATTER));
+  spawnBossExplosionAt(dx, dy);
+}
+
+// 大爆発: 32x32ボディの4象限へ同時に発生させ、1回の大きな爆発に見せる(docs/spec.md「ボス撃破の演出」2)。
+function spawnBossBigExplosion() {
+  for (let i = 0; i < BOSS_EXPLOSION_OFFSETS.length; i++) {
+    const off = BOSS_EXPLOSION_OFFSETS[i];
+    spawnBossExplosionAt(off.dx, off.dy);
   }
-  if (boss.dyingTimer <= 0) {
+}
+
+function updateDying() {
+  boss.deathElapsed += 1;
+  const t = boss.deathElapsed;
+  if (t <= BOSS_SMALL_EXPLOSION_PHASE_FRAMES) {
+    if (t % BOSS_SMALL_EXPLOSION_INTERVAL === 0) {
+      spawnBossSmallExplosion();
+    }
+  } else if (!boss.bigExplosionDone) {
+    spawnBossBigExplosion();
+    boss.bigExplosionDone = true;
+    boss.bigExplosionFrame = t;
+  }
+  // 大爆発からちょうどBOSS_BIG_EXPLOSION_DELAY_FRAMES(0.8秒)後にボスを消す
+  if (boss.bigExplosionDone && t - boss.bigExplosionFrame >= BOSS_BIG_EXPLOSION_DELAY_FRAMES) {
     boss.active = false;
     boss.dying = false;
   }
@@ -266,8 +298,9 @@ export function damageBoss(dmg) {
   boss.flashTimer = BOSS_HIT_FLASH_FRAMES;
   if (boss.hp <= 0 && !boss.dying) {
     boss.dying = true;
-    boss.dyingTimer = BOSS_DEATH_FRAMES;
-    boss.explosionStep = 0;
+    boss.deathElapsed = 0;
+    boss.bigExplosionDone = false;
+    boss.bigExplosionFrame = 0;
     return BOSS_SCORE_VALUE;
   }
   return 0;

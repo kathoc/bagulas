@@ -97,18 +97,18 @@ const DEFS = {
     ],
     fireAt: 2,
     place(i, ph, t, side) {
-      // 編隊: 横に4機、わずかにV字。side = -1(左上から) / +1(右上から)
-      const ox = (i - 1.5) * 18;
-      const oy = Math.abs(i - 1.5) * 6;
-      const sx = side < 0 ? -40 : W + 24, sy = -24;
-      const cx = 72 + ox, cy = 52 + oy;
-      if (ph === 0) return { x: lerp(sx + ox, cx, t), y: lerp(sy + oy, cy, t) };
-      if (ph === 1 || ph === 2 || ph === 3) return { x: cx, y: cy };
+      // 全機が同じ場所から出て、同じ道を通る。違うのは開始時刻(STAGGER)と停止位置だけ。
+      // side = -1(左上から) / +1(右上から)
+      const sx = side < 0 ? -24 : W + 8, sy = -20;
+      // 停止位置は進行方向に沿って斜めにずれる → 流れた結果として斜線に並ぶ
+      const cx = 72 + (i - 1.5) * 20 * -side;
+      const cy = 46 + (i - 1.5) * 7;
+      if (ph === 0) return { x: lerp(sx, cx, t), y: lerp(sy, cy, t) };
+      if (ph <= 3) return { x: cx, y: cy };
       // 離脱: 逆側の斜め上へ。外側の機ほど横に開いてV字を描く
-      const spread = (side < 0 ? 1 : -1) * (i - 1.5) * 10;
-      const ex = cx + (side < 0 ? 1 : -1) * 130 + spread * t;
-      const ey = cy - 120;
-      return { x: lerp(cx, ex, t), y: lerp(cy, ey, t * t) };
+      const spread = (i - 1.5) * 14;
+      const ex = cx + -side * 120 + spread;
+      return { x: lerp(cx, ex, t), y: lerp(cy, cy - 130, t * t) };
     },
   },
   scatter: {
@@ -121,9 +121,9 @@ const DEFS = {
     ],
     fireAt: -1,
     place(i, ph, t, side) {
-      const ox = (i - 2) * 16, oy = Math.abs(i - 2) * 8;
-      const cx = 72 + ox, cy = 48 + oy;
-      if (ph === 0) return { x: lerp(cx, cx, t), y: lerp(-24 + oy, cy, t) };
+      const sx = 72 + side * 26, sy = -20;
+      const cx = 72 + (i - 2) * 17, cy = 44 + Math.abs(i - 2) * 7;
+      if (ph === 0) return { x: lerp(sx, cx, t), y: lerp(sy, cy, t) };
       if (ph === 1) return { x: cx, y: cy };
       const dir = i < 2 ? -1 : (i > 2 ? 1 : side);
       return { x: lerp(cx, cx + dir * 140, t), y: cy + t * 30 };
@@ -135,10 +135,10 @@ const DEFS = {
     phases: [{ label: '横断 0.8秒 — 斜めに通過して反対サイドへ', dur: 110 }],
     fireAt: -1,
     place(i, ph, t, side) {
-      const lead = i * 14;
-      const sx = side < 0 ? -30 - lead : W + 14 + lead;
+      // 全機が同じ軌道を通る。ずれているのは開始時刻(STAGGER)だけ
+      const sx = side < 0 ? -24 : W + 8;
       const ex = side < 0 ? W + 30 : -30;
-      return { x: lerp(sx, ex, t), y: lerp(-20 - lead * 0.6, H + 10, t) };
+      return { x: lerp(sx, ex, t), y: lerp(-20, H + 10, t) };
     },
   },
   hopper: {
@@ -193,7 +193,7 @@ const DEFS = {
     fireAt: 2,
     place(i, ph, t, side) {
       const ox = (i - 1.5) * 20, cx = 72 + ox, cy = 56;
-      if (ph === 0) return { x: cx, y: lerp(-24, cy, t) };
+      if (ph === 0) return { x: lerp(72 + side * 24, cx, t), y: lerp(-24, cy, t) };
       if (ph === 1) return { x: cx + Math.sin(t * Math.PI * 2) * 34 * side, y: cy };
       if (ph === 2) return { x: cx, y: cy };
       return { x: lerp(cx, cx - side * 120, t), y: lerp(cy, -40, t * t) };
@@ -202,11 +202,16 @@ const DEFS = {
 };
 
 // --- 再生 -----------------------------------------------------------
+// 編隊はひとかたまりでは動かない。同じフェーズ列を1体ずつ時間差で踏む。
+// 各機は自分の時計(localFrame = frame - i*STAGGER)を持つ。
+const STAGGER = 11; // 機ごとの開始ずれ(フレーム)
+
 let cur = 'drifter', frame = 0, side = -1, bullets = [];
 const player = { x: 72, y: 108 };
 
 function def() { return DEFS[cur]; }
-function total() { return def().phases.reduce((s, p) => s + p.dur, 0) + 40; }
+function span() { return def().phases.reduce((s, p) => s + p.dur, 0); }
+function total() { return span() + STAGGER * (def().count - 1) + 40; }
 
 function phaseAt(f) {
   let acc = 0;
@@ -229,20 +234,6 @@ function reset() {
 
 function step() {
   const d = def();
-  const { i: ph, t } = phaseAt(frame);
-
-  // 発射フェーズの頭で1発だけ出す
-  if ((ph === d.fireAt || ph === d.fireAt2) && frame > 0) {
-    const prev = phaseAt(frame - 1).i;
-    if (prev !== ph) {
-      for (let m = 0; m < d.count; m++) {
-        const p = d.place(m, ph, 0, side);
-        const dx = player.x - p.x, dy = player.y - p.y;
-        const len = Math.hypot(dx, dy) || 1;
-        bullets.push({ x: p.x + 6, y: p.y + 10, vx: dx / len * 1.6, vy: dy / len * 1.6 });
-      }
-    }
-  }
 
   ctx.fillStyle = PALETTE[1];
   ctx.fillRect(0, 0, W, H);
@@ -252,8 +243,23 @@ function step() {
 
   blit(ART.player_buggy, player.x - 8, player.y);
 
-  const flash = (ph === d.fireAt || ph === d.fireAt2) ? (frame % 4 < 2) : false;
+  let lead = null; // 先頭機のフェーズを右のリスト表示に使う
   for (let m = 0; m < d.count; m++) {
+    const lf = frame - m * STAGGER;   // この機だけの時計
+    if (lf < 0) continue;             // まだ出てきていない
+    if (lf > span()) continue;        // もう抜けきった
+    const { i: ph, t } = phaseAt(lf);
+    if (m === 0) lead = ph;
+
+    // 発射フェーズに入った最初のフレームで、その機が1発撃つ
+    if ((ph === d.fireAt || ph === d.fireAt2) && lf > 0 && phaseAt(lf - 1).i !== ph) {
+      const p = d.place(m, ph, 0, side);
+      const dx = player.x - p.x, dy = player.y - p.y;
+      const len = Math.hypot(dx, dy) || 1;
+      bullets.push({ x: p.x + 6, y: p.y + 10, vx: dx / len * 1.6, vy: dy / len * 1.6 });
+    }
+
+    const flash = (ph === d.fireAt || ph === d.fireAt2) && (lf % 4 < 2);
     const p = d.place(m, ph, t, side);
     blit(ART[d.art], p.x - 8, p.y - 8, flash);
   }
@@ -262,10 +268,11 @@ function step() {
   for (const b of bullets) { b.x += b.vx; b.y += b.vy; ctx.fillRect(Math.round(b.x), Math.round(b.y), 3, 3); }
   bullets = bullets.filter((b) => b.y < H + 8 && b.x > -8 && b.x < W + 8);
 
-  for (const li of document.querySelectorAll('#phases li')) li.classList.toggle('now', Number(li.dataset.i) === ph);
+  for (const li of document.querySelectorAll('#phases li')) li.classList.toggle('now', Number(li.dataset.i) === lead);
   document.getElementById('bar').style.width = (frame / total() * 100) + '%';
   document.getElementById('meta').textContent =
-    d.name + ' / ' + d.count + '機 / 出現: ' + (side < 0 ? '左上' : '右上') + ' / frame ' + frame + ' / 全' + total() + 'f';
+    d.name + ' / ' + d.count + '機 / 出現: ' + (side < 0 ? '左上' : '右上') +
+    ' / 機ごとに' + STAGGER + 'fずつ遅れて同じ振り付けを踏む / frame ' + frame;
 
   if (++frame >= total()) reset();
 }
