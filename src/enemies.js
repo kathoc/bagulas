@@ -459,8 +459,11 @@ const SHAKE_PERIOD_SHIFT = 3; // オフロード揺れの周期(game.jsのSHAKE_
 const ENEMY_SPEED_OFFROAD_NUM = 0x00ab;
 const ENEMY_BULLET_SPEED = 2; // 敵弾速度(px/frame、整数)
 export const ENEMY_BULLET_TILE = TILE_BULLET_ENEMY; // 敵弾専用タイル(最暗色index3)。boss.jsも同じ弾タイルを流用する
-const ENEMY_FIRE_PROXIMITY = f(32); // 自機/敵の中心距離がx/yとも32px以内なら発射しない
-const SPRITE_CENTER_OFFSET = f(8); // 16x16スプライトの中心。近距離発射抑止はヒットボックスではなく見た目中心で判定する
+// 近距離発射抑止の半径(px)。敵の当たり判定の中心から半径8ドットの円で判定する。
+// 従来の±32px矩形は広すぎ、自機が近いだけで撃たない敵が多発していた。
+// 「ほぼ重なっている時だけ撃たない」程度に絞る。
+const ENEMY_FIRE_PROXIMITY_PX = 8;
+const ENEMY_FIRE_PROXIMITY_SQ = ENEMY_FIRE_PROXIMITY_PX * ENEMY_FIRE_PROXIMITY_PX;
 
 const OBSTACLE_HP = 3; // 破壊可障害物の耐久
 
@@ -1517,16 +1520,15 @@ const ENEMY_FIRE_BLOCK_BY_KIND = byKind('ENEMY_FIRE_BLOCK_BY_KIND', [
   chaserFireBlocked, // CHASER
 ]);
 
+// 自機と敵の「当たり判定の中心」の距離が半径8ドットの円の内側なら撃たない。
+// 自機・敵とも当たり判定は16x16スプライトの中心に置いてある(src/hitbox.js のcenterCoordは
+// どちらにもSPRITE_HALF_16を足す)ので、左上座標の差がそのまま判定中心どうしの差になる。
+// sqrtは使わず二乗のまま比較する。8.8固定小数点のまま二乗すると桁が膨らむので、
+// 先にpxへ落としてから整数で二乗する(8.8のtoPx相当 = >>8)。
 function isPlayerTooCloseToFire(e) {
-  let dx = curPlayerX + SPRITE_CENTER_OFFSET - (e.x + SPRITE_CENTER_OFFSET);
-  let dy = curPlayerY + SPRITE_CENTER_OFFSET - (e.y + SPRITE_CENTER_OFFSET);
-  if (dx < 0) {
-    dx = -dx;
-  }
-  if (dy < 0) {
-    dy = -dy;
-  }
-  return dx <= ENEMY_FIRE_PROXIMITY && dy <= ENEMY_FIRE_PROXIMITY;
+  const dx = (curPlayerX - e.x) >> 8; // 中心オフセットは両者で同じなので差では消える
+  const dy = (curPlayerY - e.y) >> 8;
+  return dx * dx + dy * dy <= ENEMY_FIRE_PROXIMITY_SQ;
 }
 
 function fireEnemyBullet(e) {
